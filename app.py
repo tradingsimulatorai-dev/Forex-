@@ -1,4 +1,4 @@
-import hmac, os, threading
+import glob, hmac, os, threading
 from flask import Flask, jsonify, request
 from backtest import run_all
 
@@ -16,6 +16,11 @@ def authed():
 
 def clean(s):
     return "".join(ch for ch in s if ch.isalnum())
+
+
+@app.post("/ping")  # EA connection test
+def ping():
+    return ("pong", 200) if authed() else ("forbidden", 403)
 
 
 @app.post("/ingest")  # called by the MT4 EA
@@ -71,6 +76,17 @@ def state():
     return jsonify(STATE)
 
 
+@app.get("/data")  # shows what the EA has delivered
+def data():
+    out = []
+    for f in sorted(glob.glob(DATA + "/*.csv")):
+        with open(f) as fh:
+            lines = fh.read().strip().split("\n")
+        out.append({"sym": os.path.basename(f).split("_")[0],
+                    "rows": len(lines) - 1, "last": lines[-1].split(",")[0]})
+    return jsonify(out)
+
+
 PAGE = """<!doctype html><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>Strategy backtests</title>
 <style>
@@ -83,8 +99,10 @@ button{background:#1d2433;color:#fff;border-color:#1d2433;cursor:pointer}
 th,td{padding:7px 9px;border-bottom:1px solid #e3e6ec;text-align:right;white-space:nowrap}
 th:nth-child(-n+2),td:nth-child(-n+2){text-align:left}
 .g{color:#0f7b3f;font-weight:600}.r{color:#b3261e}
+#d{background:#fff;border:1px solid #e3e6ec;border-radius:6px;padding:8px 10px;margin-bottom:12px;font-size:13px}
 </style>
 <h1>Strategy backtests (15m, ATR stop and target)</h1>
+<div id=d>No data received yet</div>
 <div class=bar>
 <input id=k type=password placeholder="API key">
 <input id=f type=file multiple accept=.csv>
@@ -99,10 +117,12 @@ async function post(u,fd){fd.append('key',key());return (await fetch(u,{method:'
 async function up(){const fd=new FormData();for(const x of f.files)fd.append('f',x);s.textContent=await post('/upload',fd)}
 async function run(){s.textContent=await post('/run',new FormData())}
 async function load(){
- const d=await (await fetch('/state')).json();
- s.textContent=d.status+(d.error?': '+d.error:'');
+ const d0=await (await fetch('/state')).json();
+ s.textContent=d0.status+(d0.error?': '+d0.error:'');
+ const x=await (await fetch('/data')).json();
+ d.innerHTML=x.length?'<b>Received from MT4:</b><br>'+x.map(a=>a.sym+': '+a.rows+' candles, last '+a.last).join('<br>'):'No data received yet';
  let h='<tr><th>Pair<th>Strategy<th>Trades<th>Win %<th>PF<th>Avg R<th>Max DD (R)<th>Earlier PF<th>Pass</tr>';
- for(const r of d.results){const o=r.oos;
+ for(const r of d0.results){const o=r.oos;
   h+=`<tr><td>${r.sym}<td>${r.strat}<td>${o.n}<td>${o.wr??'-'}<td>${o.pf??'-'}<td>${o.exp??'-'}<td>${o.dd??'-'}<td>${r.is.pf??'-'}<td class=${r.ok?'g':'r'}>${r.ok?'yes':'no'}`}
  t.innerHTML=h}
 setInterval(load,3000);load();
