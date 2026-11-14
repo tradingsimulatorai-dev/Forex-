@@ -1,4 +1,4 @@
-import glob, hmac, os, threading
+import hmac, os, threading
 from flask import Flask, jsonify, request
 from backtest import run_all
 
@@ -39,19 +39,6 @@ def ingest():
     return "ok"
 
 
-@app.post("/upload")
-def upload():
-    if not authed():
-        return "forbidden", 403
-    n = 0
-    for f in request.files.getlist("f"):
-        sym = clean(f.filename.split("_")[0])
-        if sym:
-            f.save(f"{DATA}/{sym}_M15.csv")
-            n += 1
-    return f"{n} file(s) saved"
-
-
 @app.post("/run")
 def run():
     if not authed():
@@ -76,17 +63,6 @@ def state():
     return jsonify(STATE)
 
 
-@app.get("/data")
-def data():
-    out = []
-    for f in sorted(glob.glob(DATA + "/*.csv")):
-        with open(f) as fh:
-            lines = fh.read().strip().split("\n")
-        out.append({"sym": os.path.basename(f).split("_")[0],
-                    "rows": len(lines) - 1, "last": lines[-1].split(",")[0]})
-    return jsonify(out)
-
-
 PAGE = r"""<!doctype html><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>Strategy research</title>
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel=stylesheet>
@@ -102,7 +78,6 @@ h1{font-size:24px;margin:0;font-weight:700;letter-spacing:-.01em}
 .tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 input,button{font:inherit;font-size:14px;padding:7px 11px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
 button{background:var(--teal);border-color:var(--teal);color:#fff;font-weight:600;cursor:pointer}
-button.ghost{background:#fff;color:var(--teal)}
 .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));background:#fff;border:1px solid var(--line);border-radius:10px;margin-bottom:14px}
 .strip div{padding:12px 16px;border-right:1px solid var(--line)}
 .strip div:last-child{border-right:0}
@@ -120,7 +95,6 @@ th:first-child,td:first-child,#t2 th:nth-child(2),td.l{text-align:left}
 td small{color:var(--mut);margin-left:4px}
 .g{color:var(--g)}.r{color:var(--r)}.a{color:var(--a)}
 .b{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid currentColor}
-details{margin-top:18px;font-size:14px;color:var(--mut)}
 </style>
 <div class=wrap>
 <header><div><h1>Strategy research</h1>
@@ -134,15 +108,11 @@ details{margin-top:18px;font-size:14px;color:var(--mut)}
 <h2>Each pair</h2>
 <p class=cap>The range next to win rate is a 95% range. A wide range means too few trades to trust it.</p>
 <div class=tb><table id=t2></table></div>
-<details><summary>Data received from MT4, and manual upload</summary>
-<div id=dv></div>
-<p><input id=f type=file multiple accept=.csv> <button class=ghost onclick=up()>Upload CSV</button> <span id=s></span></p></details>
 </div>
 <script>
 const $=i=>document.getElementById(i);
 const key=()=>$('k').value;
 async function post(u,fd){fd.append('key',key());return (await fetch(u,{method:'POST',body:fd})).text()}
-async function up(){const fd=new FormData();for(const x of $('f').files)fd.append('f',x);$('s').textContent=await post('/upload',fd)}
 async function run(){$('st').textContent=await post('/run',new FormData())}
 function ci(w,n){const z=1.96,p=w/n,d=1+z*z/n,c=p+z*z/(2*n),m=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n));return[Math.round((c-m)/d*100),Math.round((c+m)/d*100)]}
 const cls=v=>v==null?'':v>=1.1?'g':v<1?'r':'a';
@@ -156,7 +126,7 @@ function summary(R){const m={};
   a.igw+=i.gw||0;a.igl+=i.gl||0}
  return Object.keys(m).map(k=>{const a=m[k];a.k=k;a.pf=a.gl?a.gw/a.gl:null;a.ipf=a.igl?a.igw/a.igl:null;return a}).sort((x,y)=>(y.pf||0)-(x.pf||0))}
 async function load(){
- const d=await (await fetch('/state')).json(),x=await (await fetch('/data')).json(),R=d.results;
+ const d=await (await fetch('/state')).json(),R=d.results;
  $('st').textContent=d.status=='running'?'Running...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
  const T=R.reduce((s,r)=>s+(r.oos.n||0),0),P=R.filter(r=>r.ok).length;
  let fr='',to='',days=0;
@@ -174,7 +144,6 @@ async function load(){
   const v=r.ok?['Passed','g']:o.n<30?['Too few trades','a']:['Unstable','r'];
   g+='<tr><td>'+r.sym+'<td class=l>'+r.strat+'<td>'+o.n+'<td>'+wr(Math.round(o.wr*o.n/100),o.n)+'<td class="'+cls(o.pf)+'">'+pf(o.pf)+'<td class="'+cls(r.is.pf)+'">'+pf(r.is.pf)+'<td>'+o.exp+'<td>'+o.dd+'<td>'+badge(v[0],v[1])}
  $('t2').innerHTML=g;
- $('dv').innerHTML=x.length?x.map(a=>a.sym+': '+a.rows+' candles, last '+a.last).join('<br>'):'No data received yet';
 }
 setInterval(load,3000);load();
 </script>"""
