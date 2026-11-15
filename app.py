@@ -1,5 +1,5 @@
 import glob, hmac, os, threading, time
-from flask import Flask, Response, jsonify, request
+from flask import Flask, jsonify, request
 from backtest import run_all
 
 app = Flask(__name__)
@@ -19,14 +19,6 @@ def authed():
 
 def clean(s):
     return "".join(ch for ch in s if ch.isalnum())
-
-
-@app.before_request
-def gate():  # the page shows account data, so viewing needs the key as password
-    if request.method == "GET":
-        a = request.authorization
-        if not (KEY and a and hmac.compare_digest(a.password or "", KEY)):
-            return Response("Login required", 401, {"WWW-Authenticate": 'Basic realm="Simulator"'})
 
 
 def start_run():
