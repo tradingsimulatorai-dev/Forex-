@@ -1,5 +1,7 @@
-import glob, hmac, os, threading, time
+import glob, hmac, lzma, os, struct, threading, time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+import pandas as pd
 import requests
 from flask import Flask, jsonify, request
 from backtest import run_all
@@ -8,13 +10,14 @@ app = Flask(__name__)
 DATA = os.environ.get("DATA_DIR", "data")
 HIST = DATA + "/hist"
 KEY = os.environ.get("API_KEY", "")
-TD_KEY = os.environ.get("TWELVE_KEY", "")
 os.makedirs(HIST, exist_ok=True)
-SYMS = {"EURUSD": "EUR/USD", "GBPUSD": "GBP/USD", "USDJPY": "USD/JPY", "USDCHF": "USD/CHF",
-        "USDCAD": "USD/CAD", "AUDUSD": "AUD/USD", "NZDUSD": "NZD/USD", "EURJPY": "EUR/JPY",
-        "GBPJPY": "GBP/JPY", "XAUUSD": "XAU/USD", "BTCUSD": "BTC/USD"}
+UA = {"User-Agent": "Mozilla/5.0"}
+SYMS = ["EURUSD", "USDCHF", "GBPUSD", "AUDUSD", "USDCAD", "USDJPY", "XAUUSD"]
+RNG = {"EURUSD": (0.5, 2.5), "GBPUSD": (0.8, 2.5), "AUDUSD": (0.3, 1.5),
+       "USDCHF": (0.5, 1.5), "USDCAD": (0.9, 2.0), "USDJPY": (60, 250), "XAUUSD": (1000, 8000)}
 STATE = {"status": "idle", "results": [], "error": ""}
-FETCH = {"status": "idle", "done": 0, "total": len(SYMS), "now": "", "failed": []}
+FETCH = {"status": "idle", "done": 0, "total": len(SYMS), "now": "", "pct": 0, "failed": []}
+CORR = {"names": [], "m": []}
 BR = {"ing": 0.0, "rows": {}}
 LIVE = {"acc": None, "q": {}, "pos": [], "t": 0.0}
 LOCK = threading.Lock()
@@ -29,6 +32,18 @@ def clean(s):
     return "".join(ch for ch in s if ch.isalnum())
 
 
+def calc_corr():  # how markets move together, from hourly moves
+    cols = {}
+    for p in sorted(glob.glob(HIST + "/*.csv")):
+        s = pd.read_csv(p, usecols=["time", "close"])
+        s["time"] = pd.to_datetime(s["time"])
+        cols[os.path.basename(p).split("_")[0]] = s.set_index("time")["close"].resample("1h").last().pct_change()
+    if len(cols) > 1:
+        c = pd.DataFrame(cols).corr().round(2).fillna(0)
+        CORR["names"] = list(c.columns)
+        CORR["m"] = c.values.tolist()
+
+
 def start_run():
     if not glob.glob(HIST + "/*.csv"):
         return False
@@ -39,6 +54,10 @@ def start_run():
 
     def job():
         try:
+            try:
+                calc_corr()
+            except Exception:
+                pass
             STATE["results"] = run_all(HIST)
             STATE["status"] = "done"
         except Exception as e:
@@ -48,47 +67,99 @@ def start_run():
     return True
 
 
-def fetch_one(sym, code):
-    rows, end = {}, None
-    cutoff = (datetime.utcnow() - timedelta(days=370)).strftime("%Y-%m-%d %H:%M:%S")
-    for _ in range(12):
-        p = {"symbol": code, "interval": "15min", "outputsize": 5000, "timezone": "UTC",
-             "order": "DESC", "apikey": TD_KEY}
-        if end:
-            p["end_date"] = end
-        r = requests.get("https://api.twelvedata.com/time_series", params=p, timeout=90).json()
-        if str(r.get("code")) == "429":  # per-minute limit: wait and retry
-            time.sleep(65)
+def day_rows(code, d):  # one day of 1-minute candles (open, close, low, high order)
+    url = (f"https://datafeed.dukascopy.com/datafeed/{code}/{d.year}/{d.month - 1:02d}/"
+           f"{d.day:02d}/BID_candles_min_1.bi5")
+    for _ in range(3):
+        try:
+            r = requests.get(url, timeout=30, headers=UA)
+        except Exception:
+            time.sleep(2)
             continue
-        vals = r.get("values")
-        if not vals:
-            raise RuntimeError(r.get("message", "no data"))
-        for v in vals:
-            rows[v["datetime"]] = v
-        oldest = vals[-1]["datetime"]
-        if len(vals) < 5000 or oldest < cutoff:
+        if r.status_code == 404:
+            return []
+        if r.status_code == 200:
+            if not r.content:
+                return []
+            raw = lzma.LZMADecompressor().decompress(r.content)
+            base = datetime(d.year, d.month, d.day)
+            return [(base + timedelta(seconds=t), o, c, l, h, v)
+                    for t, o, c, l, h, v in struct.iter_unpack(">IIIIIf", raw[: len(raw) // 24 * 24])]
+        time.sleep(2)
+    raise RuntimeError("HTTP error")
+
+
+def pick_div(sym, rows):
+    lo, hi = RNG[sym]
+    med = sorted(r[2] for r in rows)[len(rows) // 2]
+    for div in (1e5, 1e4, 1e3, 100, 10, 1):
+        if lo <= med / div <= hi:
+            return div
+    raise RuntimeError("price scale not recognised")
+
+
+def to_m15(rows, div):
+    b = {}
+    for t, o, c, l, h, v in rows:
+        k = t.replace(minute=t.minute // 15 * 15, second=0)
+        o, c, l, h = o / div, c / div, l / div, h / div
+        x = b.get(k)
+        if x is None:
+            b[k] = [o, h, l, c, v]
+        else:
+            x[1], x[2], x[3], x[4] = max(x[1], h), min(x[2], l), c, x[4] + v
+    return b
+
+
+def fetch_sym(sym):
+    today = datetime.utcnow().date()
+    days = [today - timedelta(days=i) for i in range(1, 371)]
+    days = [d for d in days if d.weekday() != 5]
+    sample = None
+    for d in days[:10]:
+        rows = day_rows(sym, d)
+        if rows:
+            sample = rows
             break
-        end = oldest
-        time.sleep(8)
-    if not rows:
-        raise RuntimeError("no data")
+    if not sample:
+        raise RuntimeError("no data from Dukascopy")
+    div = pick_div(sym, sample)
+    good = sum(1 for t, o, c, l, h, v in sample if h >= max(o, c) and l <= min(o, c))
+    if good < 0.99 * len(sample):
+        raise RuntimeError("candle format check failed")
+    out, fails = {}, 0
+
+    def work(d):
+        try:
+            return day_rows(sym, d)
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(6) as ex:
+        for i, rows in enumerate(ex.map(work, days)):
+            if rows is None:
+                fails += 1
+            else:
+                out.update(to_m15(rows, div))
+            FETCH["pct"] = (i + 1) * 100 // len(days)
+    if fails > 25:
+        raise RuntimeError(f"{fails} days failed to download")
     with open(f"{HIST}/{sym}_M15.csv", "w") as f:
         f.write("time,open,high,low,close,volume\n")
-        for k in sorted(rows):
-            v = rows[k]
-            f.write(f'{k},{v["open"]},{v["high"]},{v["low"]},{v["close"]},{v.get("volume", 0)}\n')
+        for k in sorted(out):
+            o, h, l, c, v = out[k]
+            f.write(f"{k:%Y-%m-%d %H:%M:%S},{o},{h},{l},{c},{int(v)}\n")
 
 
 def fetch_all():
-    FETCH.update(status="running", done=0, now="", failed=[])
-    for sym, code in SYMS.items():
-        FETCH["now"] = sym
+    FETCH.update(status="running", done=0, now="", pct=0, failed=[])
+    for sym in SYMS:
+        FETCH.update(now=sym, pct=0)
         try:
-            fetch_one(sym, code)
+            fetch_sym(sym)
         except Exception as e:
             FETCH["failed"].append(sym + ": " + str(e)[:90])
         FETCH["done"] += 1
-        time.sleep(8)
     FETCH["status"] = "done"
     start_run()
 
@@ -98,10 +169,8 @@ for p in glob.glob(DATA + "/*_M15.csv"):
         BR["rows"][os.path.basename(p).split("_")[0]] = max(sum(1 for _ in fh) - 1, 0)
 if glob.glob(HIST + "/*.csv"):
     start_run()
-elif TD_KEY:
-    threading.Thread(target=fetch_all, daemon=True).start()
 else:
-    FETCH["status"] = "nokey"
+    threading.Thread(target=fetch_all, daemon=True).start()
 
 
 @app.post("/ping")
@@ -166,7 +235,7 @@ def run():
 def state():
     now = time.time()
     last = max(BR["ing"], LIVE["t"])
-    return jsonify({**STATE, "fetch": FETCH,
+    return jsonify({**STATE, "fetch": FETCH, "corr": CORR,
                     "bridge": {"ago": int(now - last) if last else None,
                                "pairs": len(BR["rows"]), "rows": sum(BR["rows"].values())},
                     "live": {"acc": LIVE["acc"], "q": LIVE["q"], "pos": LIVE["pos"],
@@ -177,7 +246,7 @@ PAGE = r"""<!doctype html><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><title>Strategy research</title>
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;600;700&display=swap" rel=stylesheet>
 <style>
-:root{--bg:#eef1f5;--ink:#14213d;--mut:#5b6678;--line:#d9dee7;--g:#1a7f4b;--r:#b4322b;--a:#a8650c}
+:root{--bg:#eef1f5;--ink:#14213d;--mut:#5b6678;--line:#d9dee7;--g:#1a7f4b;--r:#b4322b;--a:#a8650c;--b:#0b5cad}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Source Sans 3",system-ui,sans-serif;font-variant-numeric:tabular-nums}
 .wrap{max-width:1100px;margin:0 auto;padding:20px 16px 40px}
@@ -207,6 +276,7 @@ th:first-child,td:first-child,#t2 th:nth-child(2),td.l{text-align:left}
 td small{color:var(--mut);margin-left:6px}
 .m{color:#9aa3b2}
 .g{color:var(--g)}.r{color:var(--r)}.a{color:var(--a)}
+td.pos{color:var(--b);font-weight:700}td.neg{color:var(--a);font-weight:700}
 .b{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid currentColor}
 </style>
 <div class=wrap>
@@ -217,6 +287,9 @@ td small{color:var(--mut);margin-left:6px}
 <h2>Open positions</h2><div class=tb><table id=t3></table></div>
 <h2>Live prices</h2><p class=cap id=mk></p>
 <div class=tb><table id=t4></table></div>
+<h2>How the markets move together</h2>
+<p class=cap>Hourly moves over the last year. Blue: move together. Amber: move opposite. Take Buy and Sell trades from different groups, not from a pair that moves opposite.</p>
+<div class=tb><table id=t5></table></div>
 <div id=nt style="margin-top:22px"></div><div class=strip id=sp></div>
 <h2>Strategies across all pairs</h2>
 <p class=cap>Results on data the strategy had not seen (last third of the period).</p>
@@ -249,6 +322,11 @@ function live(l){const a=l.acc;
  for(const s of keys){const x=l.q[s],o=op.includes(s),dec=(x.bid.split('.')[1]||'').length,m=o?'':' class=m';
   q+='<tr><td>'+s+'<td>'+(o?badge('Open','g'):badge('Closed','a')+'<small>last tick '+(x.age!=null&&x.age<99999?ago(x.age)+' ago':'unknown')+'</small>')+'<td'+m+'>'+x.bid+'<td'+m+'>'+x.ask+'<td'+m+'>'+(o?Math.round((x.ask-x.bid)*Math.pow(10,dec)):'-')+'</tr>'}
  $('t4').innerHTML=q}
+function corr(c){
+ if(!c||!c.names.length){$('t5').innerHTML='<tr><td>Calculated after the history download finishes</tr>';return}
+ let h='<tr><th><th>'+c.names.join('<th>')+'</tr>';
+ c.names.forEach((n,i)=>{h+='<tr><td>'+n+c.m[i].map((v,j)=>'<td class="'+(i==j?'m':v>=.5?'pos':v<=-.5?'neg':'')+'">'+(i==j?'-':v.toFixed(2))).join('')+'</tr>'});
+ $('t5').innerHTML=h}
 function ci(w,n){const z=1.96,p=w/n,d=1+z*z/n,c=p+z*z/(2*n),m=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n));return[Math.round((c-m)/d*100),Math.round((c+m)/d*100)]}
 const cls=v=>v==null?'':v>=1.1?'g':v<1?'r':'a';
 const pf=v=>v==null?'-':v.toFixed(2);
@@ -261,8 +339,8 @@ function summary(R){const m={};
  return Object.keys(m).map(k=>{const a=m[k];a.k=k;a.pf=a.gl?a.gw/a.gl:null;a.ipf=a.igl?a.igw/a.igl:null;return a}).sort((x,y)=>(y.pf||0)-(x.pf||0))}
 async function load(){
  let d;try{d=await (await fetch('/state')).json()}catch(e){$('br').innerHTML='<span class="dot warn"></span>Server is waking up, please wait up to a minute...';return}
- const R=d.results,f=d.fetch;bridge(d.bridge);live(d.live);
- $('st').textContent=f.status=='running'?'Downloading history: '+f.done+' of '+f.total+' ('+f.now+')':f.status=='nokey'&&!R.length?'Add TWELVE_KEY in Render to download data':d.status=='running'?'Running backtest...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
+ const R=d.results,f=d.fetch;bridge(d.bridge);live(d.live);corr(d.corr);
+ $('st').textContent=f.status=='running'?'Downloading history: '+f.now+' '+f.pct+'% ('+f.done+' of '+f.total+' pairs)':d.status=='running'?'Running backtest...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
  const T=R.reduce((s,r)=>s+(r.oos.n||0),0),P=R.filter(r=>r.ok).length;
  let fr='',to='',days=0;
  if(R.length){fr=R.map(r=>r.from).sort()[0];to=R.map(r=>r.to).sort().pop();days=Math.round((new Date(to)-new Date(fr))/864e5)}
