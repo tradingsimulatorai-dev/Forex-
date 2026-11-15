@@ -16,7 +16,7 @@ def run_all(folder, k=1.5, m=3.0):
     # Pure Real Calculation on MT4 Data
     df['returns'] = df['close'].diff()
     winning_trades = df[df['returns'] > 0]
-failing_trades = df[df['returns'] < 0]
+    failing_trades = df[df['returns'] < 0]
     
     total_trades = len(df) - 1
     if total_trades <= 0:
