@@ -1,4 +1,4 @@
-import hmac, os, threading
+import glob, hmac, os, threading, time
 from flask import Flask, jsonify, request
 from backtest import run_all
 
@@ -7,6 +7,8 @@ DATA = os.environ.get("DATA_DIR", "data")
 KEY = os.environ.get("API_KEY", "")
 os.makedirs(DATA, exist_ok=True)
 STATE = {"status": "idle", "results": [], "error": ""}
+BR = {"last": 0.0, "dirty": False, "rows": {}}
+LOCK = threading.Lock()
 
 
 def authed():
@@ -16,6 +18,39 @@ def authed():
 
 def clean(s):
     return "".join(ch for ch in s if ch.isalnum())
+
+
+def start_run():
+    with LOCK:
+        if STATE["status"] == "running":
+            return False
+        STATE.update(status="running", error="")
+    BR["dirty"] = False
+
+    def job():
+        try:
+            STATE["results"] = run_all(DATA)
+            STATE["status"] = "done"
+        except Exception as e:
+            STATE.update(status="error", error=str(e))
+
+    threading.Thread(target=job, daemon=True).start()
+    return True
+
+
+def watcher():  # auto-run 25s after MT4 stops sending
+    while True:
+        time.sleep(5)
+        if BR["dirty"] and BR["last"] and time.time() - BR["last"] > 25:
+            start_run()
+
+
+for p in glob.glob(DATA + "/*_M15.csv"):
+    with open(p) as fh:
+        BR["rows"][os.path.basename(p).split("_")[0]] = max(sum(1 for _ in fh) - 1, 0)
+threading.Thread(target=watcher, daemon=True).start()
+if BR["rows"]:
+    start_run()
 
 
 @app.post("/ping")
@@ -30,12 +65,16 @@ def ingest():
     sym = clean(request.args.get("symbol", ""))
     if not sym:
         return "no symbol", 400
+    body = request.get_data(as_text=True).strip()
     p = f"{DATA}/{sym}_M15.csv"
-    mode = "w" if request.args.get("reset") == "1" or not os.path.exists(p) else "a"
-    with open(p, mode) as f:
-        if mode == "w":
+    new = request.args.get("reset") == "1" or not os.path.exists(p)
+    with open(p, "w" if new else "a") as f:
+        if new:
             f.write("time,open,high,low,close,volume\n")
-        f.write(request.get_data(as_text=True).strip() + "\n")
+        f.write(body + "\n")
+    n = body.count("\n") + 1 if body else 0
+    BR["rows"][sym] = n if new else BR["rows"].get(sym, 0) + n
+    BR["last"], BR["dirty"] = time.time(), True
     return "ok"
 
 
@@ -43,24 +82,14 @@ def ingest():
 def run():
     if not authed():
         return "forbidden", 403
-    if STATE["status"] == "running":
-        return "already running"
-
-    def job():
-        STATE.update(status="running", error="")
-        try:
-            STATE["results"] = run_all(DATA)
-            STATE["status"] = "done"
-        except Exception as e:
-            STATE.update(status="error", error=str(e))
-
-    threading.Thread(target=job, daemon=True).start()
-    return "started"
+    return "started" if start_run() else "already running"
 
 
 @app.get("/state")
 def state():
-    return jsonify(STATE)
+    ago = int(time.time() - BR["last"]) if BR["last"] else None
+    return jsonify({**STATE, "bridge": {"ago": ago, "pairs": len(BR["rows"]),
+                                        "rows": sum(BR["rows"].values())}})
 
 
 PAGE = r"""<!doctype html><meta charset=utf-8>
@@ -71,13 +100,15 @@ PAGE = r"""<!doctype html><meta charset=utf-8>
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Source Sans 3",system-ui,sans-serif;font-variant-numeric:tabular-nums}
 .wrap{max-width:1100px;margin:0 auto;padding:20px 16px 40px}
-header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px}
+header{margin-bottom:14px}
 h1{font-size:24px;margin:0;font-weight:700;letter-spacing:-.01em}
 .sub{color:var(--mut);font-size:14px}
-.pill{border:1px solid var(--line);background:#fff;border-radius:99px;padding:3px 12px;font-size:13px;color:var(--mut)}
-.tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-input,button{font:inherit;font-size:14px;padding:7px 11px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink)}
-button{background:var(--teal);border-color:var(--teal);color:#fff;font-weight:600;cursor:pointer}
+.bar{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:14px}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:8px;background:var(--r)}
+.dot.on{background:var(--g)}.dot.warn{background:var(--a)}
+.dot.pulse{animation:p 1.2s ease-in-out infinite}
+@keyframes p{0%,100%{box-shadow:0 0 0 0 rgba(26,127,75,.5)}50%{box-shadow:0 0 0 6px rgba(26,127,75,0)}}
+.pill{border:1px solid var(--line);border-radius:99px;padding:2px 12px;font-size:13px;color:var(--mut)}
 .strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));background:#fff;border:1px solid var(--line);border-radius:10px;margin-bottom:14px}
 .strip div{padding:12px 16px;border-right:1px solid var(--line)}
 .strip div:last-child{border-right:0}
@@ -97,10 +128,9 @@ td small{color:var(--mut);margin-left:4px}
 .b{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid currentColor}
 </style>
 <div class=wrap>
-<header><div><h1>Strategy research</h1>
-<div class=sub>15-minute candles from MT4, ATR stop and target, spread included</div></div>
-<div class=tools><span class=pill id=st>Ready</span>
-<input id=k type=password placeholder="API key" size=10><button onclick=run()>Run backtest</button></div></header>
+<header><h1>Strategy research</h1>
+<div class=sub>15-minute candles from MT4, ATR stop and target, spread included. Tests run automatically when new data arrives.</div></header>
+<div class=bar><div id=br></div><span class=pill id=st>Waiting for data</span></div>
 <div class=strip id=sp></div><div id=nt></div>
 <h2>Strategies across all pairs</h2>
 <p class=cap>Results on data the strategy had not seen (last third of the period).</p>
@@ -111,9 +141,13 @@ td small{color:var(--mut);margin-left:4px}
 </div>
 <script>
 const $=i=>document.getElementById(i);
-const key=()=>$('k').value;
-async function post(u,fd){fd.append('key',key());return (await fetch(u,{method:'POST',body:fd})).text()}
-async function run(){$('st').textContent=await post('/run',new FormData())}
+function ago(s){return s<60?s+' sec':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h'}
+function bridge(b){let c='',t='Waiting for MT4. No data received yet.';
+ if(b.ago!=null){const i=' · '+b.pairs+' pairs · '+b.rows.toLocaleString()+' candles';
+  if(b.ago<20){c='on pulse';t='Receiving data from MT4 now'+i}
+  else if(b.ago<1200){c='on';t='MT4 connected · last data '+ago(b.ago)+' ago'+i}
+  else{c='warn';t='No data from MT4 for '+ago(b.ago)+'. Check the EA in MT4.'+i}}
+ $('br').innerHTML='<span class="dot '+c+'"></span>'+t}
 function ci(w,n){const z=1.96,p=w/n,d=1+z*z/n,c=p+z*z/(2*n),m=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n));return[Math.round((c-m)/d*100),Math.round((c+m)/d*100)]}
 const cls=v=>v==null?'':v>=1.1?'g':v<1?'r':'a';
 const pf=v=>v==null?'-':v.toFixed(2);
@@ -126,8 +160,9 @@ function summary(R){const m={};
   a.igw+=i.gw||0;a.igl+=i.gl||0}
  return Object.keys(m).map(k=>{const a=m[k];a.k=k;a.pf=a.gl?a.gw/a.gl:null;a.ipf=a.igl?a.igw/a.igl:null;return a}).sort((x,y)=>(y.pf||0)-(x.pf||0))}
 async function load(){
- const d=await (await fetch('/state')).json(),R=d.results;
- $('st').textContent=d.status=='running'?'Running...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
+ let d;try{d=await (await fetch('/state')).json()}catch(e){$('br').innerHTML='<span class="dot warn"></span>Server is waking up, please wait up to a minute...';return}
+ const R=d.results;bridge(d.bridge);
+ $('st').textContent=d.status=='running'?'Running backtest...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
  const T=R.reduce((s,r)=>s+(r.oos.n||0),0),P=R.filter(r=>r.ok).length;
  let fr='',to='',days=0;
  if(R.length){fr=R.map(r=>r.from).sort()[0];to=R.map(r=>r.to).sort().pop();days=Math.round((new Date(to)-new Date(fr))/864e5)}
