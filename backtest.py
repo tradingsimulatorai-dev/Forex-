@@ -130,4 +130,3 @@ def run_all(folder, k=1.5, m=3.0):
             
     res.sort(key=lambda r: r["oos"].get("pf", 0), reverse=True)
     return res
-                
