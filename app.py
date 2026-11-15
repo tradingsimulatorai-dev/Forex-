@@ -97,7 +97,8 @@ def live():
         if p[0] == "A" and len(p) >= 7:
             acc = {"bal": p[1], "eq": p[2], "mg": p[3], "free": p[4], "lvl": p[5], "cur": p[6]}
         elif p[0] == "Q" and len(p) >= 4:
-            q[p[1]] = {"bid": p[2], "ask": p[3]}
+            age = int(p[4]) if len(p) >= 5 and p[4].lstrip("-").isdigit() else None
+            q[p[1]] = {"bid": p[2], "ask": p[3], "age": age}
         elif p[0] == "P" and len(p) >= 5:
             pos.append({"s": p[1], "d": p[2], "lot": p[3], "pl": p[4]})
     LIVE.update(acc=acc, q=q, pos=pos, t=time.time())
@@ -153,7 +154,8 @@ th{font-size:13px;color:var(--mut);font-weight:600;text-align:right;padding:9px 
 td{padding:9px 12px;border-bottom:1px solid #edf0f4;text-align:right;white-space:nowrap}
 tr:last-child td{border-bottom:0}
 th:first-child,td:first-child,#t2 th:nth-child(2),td.l{text-align:left}
-td small{color:var(--mut);margin-left:4px}
+td small{color:var(--mut);margin-left:6px}
+.m{color:#9aa3b2}
 .g{color:var(--g)}.r{color:var(--r)}.a{color:var(--a)}
 .b{display:inline-block;padding:1px 9px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid currentColor}
 </style>
@@ -163,7 +165,8 @@ td small{color:var(--mut);margin-left:4px}
 <div class=bar><div id=br></div><span class=pill id=st>Waiting for data</span></div>
 <div class=strip id=ac></div>
 <h2>Open positions</h2><div class=tb><table id=t3></table></div>
-<h2>Live prices</h2><div class=tb><table id=t4></table></div>
+<h2>Live prices</h2><p class=cap id=mk></p>
+<div class=tb><table id=t4></table></div>
 <div id=nt style="margin-top:22px"></div><div class=strip id=sp></div>
 <h2>Strategies across all pairs</h2>
 <p class=cap>Results on data the strategy had not seen (last third of the period).</p>
@@ -175,29 +178,31 @@ td small{color:var(--mut);margin-left:4px}
 <script>
 const $=i=>document.getElementById(i);
 const N=v=>Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-function ago(s){return s<60?s+' sec':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h'}
+function ago(s){return s<60?s+' sec':s<3600?Math.floor(s/60)+' min':s<86400?Math.floor(s/3600)+' h':Math.floor(s/86400)+' d'}
 function bridge(b){let c='',t='Waiting for MT4. No data received yet.';
  if(b.ago!=null){const i=' · '+b.pairs+' pairs · '+b.rows.toLocaleString()+' candles';
   if(b.ago<20){c='on pulse';t='Receiving data from MT4 now'+i}
   else if(b.ago<1200){c='on';t='MT4 connected · last data '+ago(b.ago)+' ago'+i}
   else{c='warn';t='No data from MT4 for '+ago(b.ago)+'. Check the EA in MT4.'+i}}
  $('br').innerHTML='<span class="dot '+c+'"></span>'+t}
+const badge=(t,c)=>'<span class="b '+c+'">'+t+'</span>';
 function live(l){const a=l.acc;
- if(!a||l.ago==null||l.ago>60){$('ac').innerHTML='<div><b>-</b><span>Waiting for account data from MT4</span></div>';$('t3').innerHTML='';$('t4').innerHTML='';return}
+ if(!a||l.ago==null||l.ago>60){$('ac').innerHTML='<div><b>-</b><span>Waiting for account data from MT4</span></div>';$('t3').innerHTML='';$('t4').innerHTML='';$('mk').innerHTML='';return}
  const bal=+a.bal,eq=+a.eq,f=eq-bal;
  $('ac').innerHTML='<div><b>'+N(bal)+'</b><span>Balance ('+a.cur+')</span></div><div><b>'+N(eq)+'</b><span>Equity</span></div><div><b class="'+(f>=0?'g':'r')+'">'+(f>=0?'+':'')+N(f)+'</b><span>Floating P/L</span></div><div><b>'+(+a.lvl>0?(+a.lvl).toFixed(0)+'%':'-')+'</b><span>Margin level</span></div><div><b>'+N(a.free)+'</b><span>Free margin</span></div>';
  let p='<tr><th>Pair<th>Side<th>Lots<th>Profit</tr>';
  p+=l.pos.length?l.pos.map(x=>'<tr><td>'+x.s+'<td>'+x.d+'<td>'+x.lot+'<td class="'+(+x.pl>=0?'g':'r')+'">'+N(x.pl)+'</tr>').join(''):'<tr><td colspan=4>No open positions</tr>';
  $('t3').innerHTML=p;
- let q='<tr><th>Pair<th>Bid<th>Ask<th>Spread (points)</tr>';
- for(const s of Object.keys(l.q)){const x=l.q[s],dec=(x.bid.split('.')[1]||'').length;
-  q+='<tr><td>'+s+'<td>'+x.bid+'<td>'+x.ask+'<td>'+Math.round((x.ask-x.bid)*Math.pow(10,dec))+'</tr>'}
+ const keys=Object.keys(l.q),op=keys.filter(s=>l.q[s].age!=null&&l.q[s].age<300),cl=keys.filter(s=>!op.includes(s));
+ $('mk').innerHTML='<b class=g>Open now ('+op.length+'):</b> '+(op.join(', ')||'none')+'<br><b class=a>Closed ('+cl.length+'):</b> '+(cl.join(', ')||'none');
+ let q='<tr><th>Pair<th>Market<th>Bid<th>Ask<th>Spread (points)</tr>';
+ for(const s of keys){const x=l.q[s],o=op.includes(s),dec=(x.bid.split('.')[1]||'').length,m=o?'':' class=m';
+  q+='<tr><td>'+s+'<td>'+(o?badge('Open','g'):badge('Closed','a')+'<small>last tick '+(x.age!=null&&x.age<99999?ago(x.age)+' ago':'unknown')+'</small>')+'<td'+m+'>'+x.bid+'<td'+m+'>'+x.ask+'<td'+m+'>'+(o?Math.round((x.ask-x.bid)*Math.pow(10,dec)):'-')+'</tr>'}
  $('t4').innerHTML=q}
 function ci(w,n){const z=1.96,p=w/n,d=1+z*z/n,c=p+z*z/(2*n),m=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n));return[Math.round((c-m)/d*100),Math.round((c+m)/d*100)]}
 const cls=v=>v==null?'':v>=1.1?'g':v<1?'r':'a';
 const pf=v=>v==null?'-':v.toFixed(2);
 function wr(w,n){if(!n)return'-';const a=ci(w,n);return Math.round(w/n*100)+'%<small>('+a[0]+'-'+a[1]+')</small>'}
-const badge=(t,c)=>'<span class="b '+c+'">'+t+'</span>';
 function summary(R){const m={};
  for(const r of R){const o=r.oos,i=r.is;if(!o.n)continue;
   const a=m[r.strat]=m[r.strat]||{n:0,w:0,gw:0,gl:0,igw:0,igl:0,tot:0,pairs:0};
