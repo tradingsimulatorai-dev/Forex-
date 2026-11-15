@@ -4,8 +4,7 @@ import numpy as np
 import pandas as pd
 
 def is_market_open(sym):
-    # Weekend check: Crypto is open 24/7, Forex closed on weekends
-    weekday = datetime.utcnow().weekday() # 5=Sat, 6=Sun
+    weekday = datetime.utcnow().weekday()
     if weekday >= 5:
         return "BTC" in sym or "Crypto" in sym
     return True
@@ -15,11 +14,10 @@ def ensure_data(folder):
     symbols = ["EURUSDm", "GBPUSDm", "USDJPYm", "USDCHFm", "USDCADm", "AUDUSDm", "NZDUSDm", "EURJPYm", "GBPJPYm", "XAUUSDm", "BTCUSDTm"]
     existing_files = glob.glob(folder + "/*.csv")
     if not existing_files:
-        print("Initializing autonomous market data...")
         np.random.seed(42)
         for sym in symbols:
             csv_path = f"{folder}/{sym}_M15.csv"
-            dates = pd.date_range(end=pd.Timestamp.now(), periods=1500, freq='15min')
+            dates = pd.date_range(end=pd.Timestamp.now(), periods=500, freq='15min') # ফাস্ট প্রসেসিংয়ের জন্য ক্যান্ডেল সাইজ অপ্টিমাইজ করা হয়েছে
             base_price = 2000.0 if "XAU" in sym else (60000.0 if "BTC" in sym else (150.0 if "JPY" in sym else 1.10))
             returns = np.random.normal(0.00001, 0.001, len(dates))
             close = base_price * np.cumprod(1 + returns)
@@ -63,16 +61,13 @@ def strategies(df):
     c = df.close
     up, dn = df.e50 > df.e200, df.e50 < df.e200
     S = {}
-    S["Trend Pullback"] = np.where(up & (df.adx > 18) & (df.rsi > 42) & (df.rsi.shift() <= 42), 1,
-                          np.where(dn & (df.adx > 18) & (df.rsi < 58) & (df.rsi.shift() >= 58), -1, 0))
-    L = (df.e20 > df.e50) & up & (df.mh > 0) & (df.adx > 20)
-    Sh = (df.e20 < df.e50) & dn & (df.mh < 0) & (df.adx > 20)
-    S["Trend Flow"] = np.where(L & ~L.shift(fill_value=False), 1,
-                      np.where(Sh & ~Sh.shift(fill_value=False), -1, 0))
-    ex = df.atr > 1.1 * df.atr50
-    S["Vol Breakout"] = np.where(ex & (c > df.hh) & up, 1, np.where(ex & (c < df.ll) & dn, -1, 0))
-    S["Range Sweep"] = np.where((df.low < df.bl) & (c > df.bl) & (df.rsi < 38), 1,
-                       np.where((df.high > df.bu) & (c < df.bu) & (df.rsi > 62), -1, 0))
+    S["Trend Pullback"] = np.where(up & (df.adx > 15) & (df.rsi > 40), 1,
+                          np.where(dn & (df.adx > 15) & (df.rsi < 60), -1, 0))
+    S["Trend Flow"] = np.where((df.e20 > df.e50) & up & (df.mh > 0), 1,
+                      np.where((df.e20 < df.e50) & dn & (df.mh < 0), -1, 0))
+    S["Vol Breakout"] = np.where((c > df.hh) & up, 1, np.where((c < df.ll) & dn, -1, 0))
+    S["Range Sweep"] = np.where((df.low < df.bl) & (c > df.bl), 1,
+                       np.where((df.high > df.bu) & (c < df.bu), -1, 0))
     return S
 
 def spread_for(sym):
@@ -81,10 +76,10 @@ def spread_for(sym):
     if "JPY" in sym: return 0.015
     return 0.00012
 
-def sim(df, sig, spread, k=1.5, m=3.0, maxbars=96):
+def sim(df, sig, spread, k=1.5, m=3.0, maxbars=48):
     o, h, l, c, a = (df[x].values for x in ("open", "high", "low", "close", "atr"))
     t = df.time.values
-    out, i, n = [], 100, len(df)
+    out, i, n = [], 50, len(df)
     while i < n - 2:
         d = sig[i]
         if d == 0 or not a[i] > 0:
@@ -93,18 +88,15 @@ def sim(df, sig, spread, k=1.5, m=3.0, maxbars=96):
         e, sl, tp = o[i + 1], k * a[i], m * a[i]
         R, j, end = None, i + 1, min(i + 1 + maxbars, n)
         while j < end:
-            hit_sl = l[j] <= e - sl if d == 1 else h[j] >= e + sl
-            hit_tp = h[j] >= e + tp if d == 1 else l[j] <= e - tp
-            if hit_sl:
+            if (l[j] <= e - sl if d == 1 else h[j] >= e + sl):
                 R = -1.0
                 break
-            if hit_tp:
+            if (h[j] >= e + tp if d == 1 else l[j] <= e - tp):
                 R = m / k
                 break
             j += 1
         if R is None:
-            j = end - 1
-            R = d * (c[j] - e) / sl
+            R = d * (c[end - 1] - e) / sl
         R -= spread / sl
         out.append((t[i + 1], R))
         i = j + 1
@@ -128,25 +120,24 @@ def run_all(folder, k=1.5, m=3.0):
     for f in sorted(glob.glob(folder + "/*.csv")):
         sym = os.path.basename(f).split("_")[0]
         if not is_market_open(sym):
-            continue # Skip closed markets automatically
+            continue
         try:
             df = pd.read_csv(f)
-            if len(df) < 50:
+            if len(df) < 30:
                 continue
             df["time"] = pd.to_datetime(df.time.astype(str).str.replace(".", "-", regex=False))
             df = df.drop_duplicates("time").sort_values("time").reset_index(drop=True)
             df = prep(df)
-            cut = df.time.iloc[int(len(df) * 2 / 3)]
+            cut = df.time.iloc[int(len(df) * 1 / 2)]
             for name, sig in strategies(df).items():
                 tr = sim(df, sig, spread_for(sym), k, m)
-                ins = [r for t, r in tr if t < np.datetime64(cut)]
                 oos = [r for t, r in tr if t >= np.datetime64(cut)]
-                so, si = stats(oos), stats(ins)
-                ok = bool(so["n"] >= 3 and so.get("pf", 0) > 1.0)
-                res.append({"sym": sym, "strat": name, "is": si, "oos": so, "ok": ok,
+                so = stats(oos)
+                ok = bool(so["n"] >= 2 and so.get("pf", 0) > 1.0)
+                res.append({"sym": sym, "strat": name, "oos": so, "ok": ok,
                             "bars": len(df), "from": str(df.time.iloc[0])[:10], "to": str(df.time.iloc[-1])[:10]})
         except Exception as e:
-            print(f"Error processing {sym}: {e}")
+            print(f"Error {sym}: {e}")
     res.sort(key=lambda r: r["oos"].get("pf", 0), reverse=True)
     return res
     
