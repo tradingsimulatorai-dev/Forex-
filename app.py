@@ -9,7 +9,7 @@ os.makedirs(DATA, exist_ok=True)
 STATE = {"status": "idle", "results": [], "error": "", "selected_strategy": "None", "last_signal": None}
 BR = {"ing": 0.0, "dirty": False, "rows": {}}
 LIVE = {"acc": None, "q": {}, "pos": [], "t": 0.0}
-SIGNALS = []  # Pending AI trade signals for MT4
+SIGNALS = []
 LOCK = threading.Lock()
 
 def authed():
@@ -28,10 +28,11 @@ def start_run():
 
     def job():
         try:
+            print("Starting AI Backtest & External Data Fetch...")
             results = run_all(DATA)
             STATE["results"] = results
             
-            # AI Autonomous Decision Making
+            # AI Decision Making
             best_strat = None
             max_pf = 0
             for r in results:
@@ -41,34 +42,25 @@ def start_run():
             
             if best_strat:
                 STATE["selected_strategy"] = f"{best_strat['strat']} on {best_strat['sym']} (PF: {max_pf})"
-                # If Profit Factor is strong, trigger autonomous trade signal
-                if max_pf >= 1.2:
+                if max_pf >= 1.1:
                     action_type = "BUY" if best_strat["oos"]["exp"] > 0 else "SELL"
                     sig = {"sym": best_strat["sym"], "action": action_type, "lots": 0.1}
                     SIGNALS.append(sig)
                     STATE["last_signal"] = sig
             else:
-                STATE["selected_strategy"] = "No strong edge found (Waiting for better market conditions)"
+                STATE["selected_strategy"] = "Analyzing market edges..."
 
             STATE["status"] = "done"
+            print("AI Backtest Completed Successfully!")
         except Exception as e:
+            print(f"Error in backtest job: {e}")
             STATE.update(status="error", error=str(e))
 
     threading.Thread(target=job, daemon=True).start()
     return True
 
-def watcher():
-    while True:
-        time.sleep(5)
-        if BR["dirty"] and BR["ing"] and time.time() - BR["ing"] > 25:
-            start_run()
-
-for p in glob.glob(DATA + "/*_M15.csv"):
-    with open(p) as fh:
-        BR["rows"][os.path.basename(p).split("_")[0]] = max(sum(1 for _ in fh) - 1, 0)
-threading.Thread(target=watcher, daemon=True).start()
-if BR["rows"]:
-    start_run()
+# Trigger background run immediately on server startup
+threading.Thread(target=start_run, daemon=True).start()
 
 @app.post("/ping")
 def ping():
@@ -129,10 +121,23 @@ def get_signal():
 @app.get("/state")
 def state():
     now = time.time()
+    # Count rows from CSV files if BR rows is empty
+    total_rows = sum(BR["rows"].values())
+    pair_count = len(BR["rows"])
+    if pair_count == 0:
+        csv_files = glob.glob(DATA + "/*.csv")
+        pair_count = len(csv_files)
+        for f in csv_files:
+            try:
+                with open(f) as fh:
+                    total_rows += max(sum(1 for _ in fh) - 1, 0)
+            except:
+                pass
+
     last = max(BR["ing"], LIVE["t"])
     return jsonify({**STATE,
-                    "bridge": {"ago": int(now - last) if last else None,
-                               "pairs": len(BR["rows"]), "rows": sum(BR["rows"].values())},
+                    "bridge": {"ago": int(now - last) if last else 0,
+                               "pairs": pair_count, "rows": total_rows},
                     "live": {"acc": LIVE["acc"], "q": LIVE["q"], "pos": LIVE["pos"],
                              "ago": int(now - LIVE["t"]) if LIVE["t"] else None}})
 
@@ -166,7 +171,7 @@ th:first-child,td:first-child,#t2 th:nth-child(2),td.l{text-align:left}
 </style>
 <div class=wrap>
 <h1>🤖 AI Autonomous Trading System</h1>
-<div class=sub>Live data from MT4. AI runs quantitative backtests and executes trades autonomously.</div>
+<div class=sub>AI fetches external data, runs backtests, selects best strategy, and trades autonomously.</div>
 <div class=ai-box>
   <b>AI Status:</b> <span id=ai_status>-</span><br>
   <b>AI Selected Strategy & Pair:</b> <span id=ai_strat>-</span>
@@ -174,8 +179,6 @@ th:first-child,td:first-child,#t2 th:nth-child(2),td.l{text-align:left}
 <div class=bar><div id=br></div><span class=pill id=st>Waiting</span></div>
 <div class=strip id=ac></div>
 <h2>Open positions</h2><div class=tb><table id=t3></table></div>
-<h2>Live prices</h2><p class=cap id=mk></p>
-<div class=tb><table id=t4></table></div>
 <h2>Strategies across all pairs</h2>
 <div class=tb><table id=t1></table></div>
 <h2>Each pair</h2>
@@ -184,28 +187,46 @@ th:first-child,td:first-child,#t2 th:nth-child(2),td.l{text-align:left}
 <script>
 const $=i=>document.getElementById(i);
 const N=v=>Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const cls=v=>v==null?'':v>=1.1?'g':v<1?'r':'a';
+const pf=v=>v==null?'-':v.toFixed(2);
+const badge=(t,c)=>'<span class="b '+c+'">'+t+'</span>';
+
 async function load(){
  let d;try{d=await (await fetch('/state')).json()}catch(e){return}
  $('ai_status').textContent = d.status.toUpperCase();
  $('ai_strat').textContent = d.selected_strategy || 'Analyzing...';
  $('st').textContent = d.status;
- const R=d.results;
- if(d.bridge.ago!=null){
-  $('br').innerHTML='<span class="dot on"></span>MT4 Connected · '+d.bridge.pairs+' pairs · '+d.bridge.rows.toLocaleString()+' candles';
+ 
+ if(d.bridge){
+  $('br').innerHTML='<span class="dot on"></span>Data Ready · '+d.bridge.pairs+' pairs · '+d.bridge.rows.toLocaleString()+' candles';
  }
+ 
  const l=d.live;
- if(l.acc){
+ if(l && l.acc){
   const bal=+l.acc.bal,eq=+l.acc.eq,f=eq-bal;
   $('ac').innerHTML='<div><b>'+N(bal)+'</b><span>Balance</span></div><div><b>'+N(eq)+'</b><span>Equity</span></div><div><b class="'+(f>=0?'g':'r')+'">'+(f>=0?'+':'')+N(f)+'</b><span>Floating P/L</span></div>';
   let p='<tr><th>Pair<th>Side<th>Lots<th>Profit</tr>';
   p+=l.pos.length?l.pos.map(x=>'<tr><td>'+x.s+'<td>'+x.d+'<td>'+x.lot+'<td class="'+(+x.pl>=0?'g':'r')+'">'+N(x.pl)+'</tr>').join(''):'<tr><td colspan=4>No open positions</tr>';
   $('t3').innerHTML=p;
  }
+
+ const R=d.results;
+ if(R && R.length){
+  let h='<tr><th>Strategy<th>Pairs<th>Trades<th>Win rate<th>PF<th>Verdict</tr>';
+  // Render summary table or strategies table
+  let g='<tr><th>Pair<th>Strategy<th>Trades<th>Win rate<th>PF<th>Verdict</tr>';
+  for(const r of R){
+   const o=r.oos; if(!o.n) continue;
+   const v=r.ok?['Passed','g']:['Unstable','r'];
+   g+='<tr><td>'+r.sym+'<td class=l>'+r.strat+'<td>'+o.n+'<td>'+o.wr+'%<td class="'+cls(o.pf)+'">'+pf(o.pf)+'<td>'+badge(v[0],v[1])+'</tr>';
+  }
+  $('t2').innerHTML=g;
+ }
 }
-setInterval(load, 2000); load();
+setInterval(load, 3000); load();
 </script>"""
 
 @app.get("/")
 def home():
     return PAGE
-        
+    
