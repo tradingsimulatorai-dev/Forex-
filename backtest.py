@@ -1,36 +1,29 @@
 import glob, os
-from datetime import datetime
 import numpy as np
 import pandas as pd
 
-def is_market_open(sym):
-    weekday = datetime.utcnow().weekday()
-    if weekday >= 5:
-        return "BTC" in sym or "Crypto" in sym
-    return True
-
 def ensure_data(folder):
     os.makedirs(folder, exist_ok=True)
-    symbols = ["EURUSDm", "GBPUSDm", "USDJPYm", "USDCHFm", "USDCADm", "AUDUSDm", "NZDUSDm", "EURJPYm", "GBPJPYm", "XAUUSDm", "BTCUSDTm"]
-    existing_files = glob.glob(folder + "/*.csv")
-    if not existing_files:
+    sym = "BTCUSDTm"
+    csv_path = f"{folder}/{sym}_M15.csv"
+    
+    # Force initialize BTC data if missing
+    if not os.path.exists(csv_path):
         np.random.seed(42)
-        for sym in symbols:
-            csv_path = f"{folder}/{sym}_M15.csv"
-            dates = pd.date_range(end=pd.Timestamp.now(), periods=500, freq='15min') # ফাস্ট প্রসেসিংয়ের জন্য ক্যান্ডেল সাইজ অপ্টিমাইজ করা হয়েছে
-            base_price = 2000.0 if "XAU" in sym else (60000.0 if "BTC" in sym else (150.0 if "JPY" in sym else 1.10))
-            returns = np.random.normal(0.00001, 0.001, len(dates))
-            close = base_price * np.cumprod(1 + returns)
-            high = close + np.random.uniform(0.0001, 0.0015, len(dates)) * base_price
-            low = close - np.random.uniform(0.0001, 0.0015, len(dates)) * base_price
-            op = close + np.random.normal(0, 0.0004, len(dates)) * base_price
-            volume = np.random.randint(300, 4000, len(dates))
-            
-            df = pd.DataFrame({
-                'time': dates.strftime('%Y-%m-%d %H:%M:%S'),
-                'open': op, 'high': high, 'low': low, 'close': close, 'volume': volume
-            })
-            df.to_csv(csv_path, index=False)
+        dates = pd.date_range(end=pd.Timestamp.now(), periods=1000, freq='15min')
+        base_price = 65000.0
+        returns = np.random.normal(0.00002, 0.0015, len(dates))
+        close = base_price * np.cumprod(1 + returns)
+        high = close + np.random.uniform(0.0005, 0.002, len(dates)) * base_price
+        low = close - np.random.uniform(0.0005, 0.002, len(dates)) * base_price
+        op = close + np.random.normal(0, 0.001, len(dates)) * base_price
+        volume = np.random.randint(500, 5000, len(dates))
+        
+        df = pd.DataFrame({
+            'time': dates.strftime('%Y-%m-%d %H:%M:%S'),
+            'open': op, 'high': high, 'low': low, 'close': close, 'volume': volume
+        })
+        df.to_csv(csv_path, index=False)
 
 def ema(s, n):
     return s.ewm(span=n, adjust=False).mean()
@@ -70,13 +63,7 @@ def strategies(df):
                        np.where((df.high > df.bu) & (c < df.bu), -1, 0))
     return S
 
-def spread_for(sym):
-    if "BTC" in sym: return 25.0
-    if "XAU" in sym: return 0.30
-    if "JPY" in sym: return 0.015
-    return 0.00012
-
-def sim(df, sig, spread, k=1.5, m=3.0, maxbars=48):
+def sim(df, sig, spread=25.0, k=1.5, m=3.0, maxbars=48):
     o, h, l, c, a = (df[x].values for x in ("open", "high", "low", "close", "atr"))
     t = df.time.values
     out, i, n = [], 50, len(df)
@@ -117,10 +104,12 @@ def stats(R):
 def run_all(folder, k=1.5, m=3.0):
     ensure_data(folder)
     res = []
-    for f in sorted(glob.glob(folder + "/*.csv")):
-        sym = os.path.basename(f).split("_")[0]
-        if not is_market_open(sym):
-            continue
+    # Strictly target BTCUSDTm since it is the open live market
+    target_file = f"{folder}/BTCUSDTm_M15.csv"
+    files = [target_file] if os.path.exists(target_file) else glob.glob(folder + "/BTC*.csv")
+    
+    for f in files:
+        sym = "BTCUSDTm"
         try:
             df = pd.read_csv(f)
             if len(df) < 30:
@@ -130,7 +119,7 @@ def run_all(folder, k=1.5, m=3.0):
             df = prep(df)
             cut = df.time.iloc[int(len(df) * 1 / 2)]
             for name, sig in strategies(df).items():
-                tr = sim(df, sig, spread_for(sym), k, m)
+                tr = sim(df, sig, 25.0, k, m)
                 oos = [r for t, r in tr if t >= np.datetime64(cut)]
                 so = stats(oos)
                 ok = bool(so["n"] >= 2 and so.get("pf", 0) > 1.0)
@@ -138,6 +127,7 @@ def run_all(folder, k=1.5, m=3.0):
                             "bars": len(df), "from": str(df.time.iloc[0])[:10], "to": str(df.time.iloc[-1])[:10]})
         except Exception as e:
             print(f"Error {sym}: {e}")
+            
     res.sort(key=lambda r: r["oos"].get("pf", 0), reverse=True)
     return res
-    
+                
