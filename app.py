@@ -208,4 +208,4 @@ setInterval(load, 2000); load();
 @app.get("/")
 def home():
     return PAGE
-            
+        
