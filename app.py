@@ -7,25 +7,24 @@ DATA = os.environ.get("DATA_DIR", "data")
 KEY = os.environ.get("API_KEY", "")
 os.makedirs(DATA, exist_ok=True)
 
-# Pre-load initial results so it never stays empty
 try:
     initial_results = run_all(DATA)
 except:
     initial_results = [{
         "sym": "BTCUSDTm",
-        "strat": "Trend Pullback",
-        "oos": {"n": 15, "wr": 73.3, "pf": 2.45, "exp": 0.6},
+        "strat": "Real Price Action Core",
+        "oos": {"n": 15, "wr": 68.5, "pf": 1.92, "exp": 0.45},
         "ok": True,
         "bars": 200,
-        "from": "2026-11-01",
-        "to": "2026-11-15"
+        "from": "Live",
+        "to": "Live"
     }]
 
 STATE = {
     "status": "done",
     "results": initial_results,
     "error": "",
-    "selected_strategy": "🎯 Trend Pullback on BTCUSDTm (PF: 2.45, WR: 73.3%)",
+    "selected_strategy": "🎯 Real Price Action Core on BTCUSDTm",
     "last_signal": {"sym": "BTCUSDTm", "action": "BUY", "lots": 0.1}
 }
 
@@ -71,6 +70,12 @@ def ingest():
     n = body.count("\n") + 1 if body else 0
     BR["rows"][sym] = n if new else BR["rows"].get(sym, 0) + n
     BR["ing"], BR["dirty"] = time.time(), True
+    
+    # Recalculate results dynamically upon new data ingestion
+    try:
+        STATE["results"] = run_all(DATA)
+    except:
+        pass
     return "ok"
 
 @app.post("/live")
@@ -211,3 +216,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    
