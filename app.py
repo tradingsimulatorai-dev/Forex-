@@ -14,7 +14,9 @@ LOCK = threading.Lock()
 
 def authed():
     sent = request.headers.get("X-Key") or request.form.get("key") or ""
-    return bool(KEY) and hmac.compare_digest(sent, KEY)
+    if not KEY:
+        return True # API key optional if not set
+    return hmac.compare_digest(sent, KEY)
 
 def clean(s):
     return "".join(ch for ch in s if ch.isalnum())
@@ -28,10 +30,10 @@ def start_run():
 
     def job():
         try:
-            print("AI Autonomous Scanner Running on Open Markets...")
+            print("AI Autonomous Scanner Running...")
             results = run_all(DATA)
             open_results = [r for r in results if is_market_open(r["sym"])]
-            STATE["results"] = open_results or results
+            STATE["results"] = open_results if open_results else results
             
             best_strat = None
             max_pf = 0
@@ -56,7 +58,7 @@ def start_run():
                     STATE["selected_strategy"] = "Scanning active market sessions..."
 
             STATE["status"] = "done"
-            print("AI Scan & Signal Generation Completed!")
+            print("AI Scan Completed Successfully!")
         except Exception as e:
             print(f"Error in backtest: {e}")
             STATE.update(status="error", error=str(e))
@@ -103,13 +105,14 @@ def live():
     q, pos, acc = {}, [], None
     for ln in request.get_data(as_text=True).strip().split("\n"):
         p = ln.strip().split(",")
-        if p[0] == "A" and len(p) >= 7:
-            acc = {"bal": p[1], "eq": p[2], "mg": p[3], "free": p[4], "lvl": p[5], "cur": p[6]}
-        elif p[0] == "Q" and len(p) >= 4:
-            age = int(p[4]) if len(p) >= 5 and p[4].lstrip("-").isdigit() else None
-            q[p[1]] = {"bid": p[2], "ask": p[3], "age": age}
-        elif p[0] == "P" and len(p) >= 5:
-            pos.append({"s": p[1], "d": p[2], "lot": p[3], "pl": p[4]})
+        if len(p) > 0:
+            if p[0] == "A" and len(p) >= 7:
+                acc = {"bal": p[1], "eq": p[2], "mg": p[3], "free": p[4], "lvl": p[5], "cur": p[6]}
+            elif p[0] == "Q" and len(p) >= 4:
+                age = int(p[4]) if len(p) >= 5 and p[4].lstrip("-").isdigit() else None
+                q[p[1]] = {"bid": p[2], "ask": p[3], "age": age}
+            elif p[0] == "P" and len(p) >= 5:
+                pos.append({"s": p[1], "d": p[2], "lot": p[3], "pl": p[4]})
     LIVE.update(acc=acc, q=q, pos=pos, t=time.time())
     return "ok"
 
@@ -240,4 +243,7 @@ setInterval(load, 3000); load();
 @app.get("/")
 def home():
     return PAGE
-                    
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    
