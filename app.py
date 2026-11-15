@@ -1,6 +1,6 @@
 import glob, hmac, os, threading, time
 from flask import Flask, jsonify, request
-from backtest import run_all, is_market_open
+from backtest import run_all
 
 app = Flask(__name__)
 DATA = os.environ.get("DATA_DIR", "data")
@@ -15,7 +15,7 @@ LOCK = threading.Lock()
 def authed():
     sent = request.headers.get("X-Key") or request.form.get("key") or ""
     if not KEY:
-        return True # API key optional if not set
+        return True
     return hmac.compare_digest(sent, KEY)
 
 def clean(s):
@@ -32,8 +32,7 @@ def start_run():
         try:
             print("AI Autonomous Scanner Running...")
             results = run_all(DATA)
-            open_results = [r for r in results if is_market_open(r["sym"])]
-            STATE["results"] = open_results if open_results else results
+            STATE["results"] = results
             
             best_strat = None
             max_pf = 0
