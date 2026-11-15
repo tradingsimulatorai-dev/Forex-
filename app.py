@@ -16,7 +16,8 @@ SYMS = ["EURUSD", "USDCHF", "GBPUSD", "AUDUSD", "USDCAD", "USDJPY", "XAUUSD"]
 RNG = {"EURUSD": (0.5, 2.5), "GBPUSD": (0.8, 2.5), "AUDUSD": (0.3, 1.5),
        "USDCHF": (0.5, 1.5), "USDCAD": (0.9, 2.0), "USDJPY": (60, 250), "XAUUSD": (1000, 8000)}
 STATE = {"status": "idle", "results": [], "error": ""}
-FETCH = {"status": "idle", "done": 0, "total": len(SYMS), "now": "", "pct": 0, "failed": []}
+FETCH = {"status": "idle", "done": 0, "total": len(SYMS), "now": "", "pct": 0, "failed": [],
+         "ok": 0, "empty": 0, "fail": 0, "err": "", "step": ""}
 CORR = {"names": [], "m": []}
 BR = {"ing": 0.0, "rows": {}}
 LIVE = {"acc": None, "q": {}, "pos": [], "t": 0.0}
@@ -70,11 +71,13 @@ def start_run():
 def day_rows(code, d):  # one day of 1-minute candles (open, close, low, high order)
     url = (f"https://datafeed.dukascopy.com/datafeed/{code}/{d.year}/{d.month - 1:02d}/"
            f"{d.day:02d}/BID_candles_min_1.bi5")
-    for _ in range(3):
+    last = "failed"
+    for _ in range(2):
         try:
-            r = requests.get(url, timeout=30, headers=UA)
-        except Exception:
-            time.sleep(2)
+            r = requests.get(url, timeout=(5, 20), headers=UA)
+        except Exception as e:
+            last = type(e).__name__
+            time.sleep(1)
             continue
         if r.status_code == 404:
             return []
@@ -85,8 +88,9 @@ def day_rows(code, d):  # one day of 1-minute candles (open, close, low, high or
             base = datetime(d.year, d.month, d.day)
             return [(base + timedelta(seconds=t), o, c, l, h, v)
                     for t, o, c, l, h, v in struct.iter_unpack(">IIIIIf", raw[: len(raw) // 24 * 24])]
-        time.sleep(2)
-    raise RuntimeError("HTTP error")
+        last = "HTTP " + str(r.status_code)
+        time.sleep(1)
+    raise RuntimeError(last)
 
 
 def pick_div(sym, rows):
@@ -112,35 +116,49 @@ def to_m15(rows, div):
 
 
 def fetch_sym(sym):
+    FETCH.update(pct=0, ok=0, empty=0, fail=0, err="", step="testing connection")
     today = datetime.utcnow().date()
     days = [today - timedelta(days=i) for i in range(1, 371)]
     days = [d for d in days if d.weekday() != 5]
-    sample = None
-    for d in days[:10]:
-        rows = day_rows(sym, d)
+    sample, bad = None, 0
+    for d in days[:12]:
+        try:
+            rows = day_rows(sym, d)
+        except Exception as e:
+            bad += 1
+            FETCH["err"] = f"{sym} {d}: {e}"
+            if bad >= 4:
+                raise RuntimeError(f"cannot reach Dukascopy ({e})")
+            continue
         if rows:
             sample = rows
             break
     if not sample:
-        raise RuntimeError("no data from Dukascopy")
+        raise RuntimeError("Dukascopy returned no data for the last days (404)")
     div = pick_div(sym, sample)
     good = sum(1 for t, o, c, l, h, v in sample if h >= max(o, c) and l <= min(o, c))
     if good < 0.99 * len(sample):
         raise RuntimeError("candle format check failed")
+    FETCH["step"] = "downloading"
     out, fails = {}, 0
 
     def work(d):
         try:
             return day_rows(sym, d)
-        except Exception:
+        except Exception as e:
+            FETCH["err"] = f"{sym} {d}: {e}"
             return None
 
     with ThreadPoolExecutor(6) as ex:
         for i, rows in enumerate(ex.map(work, days)):
             if rows is None:
                 fails += 1
-            else:
+                FETCH["fail"] = fails
+            elif rows:
+                FETCH["ok"] += 1
                 out.update(to_m15(rows, div))
+            else:
+                FETCH["empty"] += 1
             FETCH["pct"] = (i + 1) * 100 // len(days)
     if fails > 25:
         raise RuntimeError(f"{fails} days failed to download")
@@ -154,13 +172,13 @@ def fetch_sym(sym):
 def fetch_all():
     FETCH.update(status="running", done=0, now="", pct=0, failed=[])
     for sym in SYMS:
-        FETCH.update(now=sym, pct=0)
+        FETCH["now"] = sym
         try:
             fetch_sym(sym)
         except Exception as e:
-            FETCH["failed"].append(sym + ": " + str(e)[:90])
+            FETCH["failed"].append(sym + ": " + str(e)[:110])
         FETCH["done"] += 1
-    FETCH["status"] = "done"
+    FETCH.update(status="done", step="")
     start_run()
 
 
@@ -283,6 +301,7 @@ td.pos{color:var(--b);font-weight:700}td.neg{color:var(--a);font-weight:700}
 <h1>Strategy research</h1>
 <div class=sub>Live data from MT4. Backtests use one year of 15-minute history downloaded by the server.</div>
 <div class=bar><div id=br></div><span class=pill id=st>Waiting for data</span></div>
+<div id=nt></div>
 <div class=strip id=ac></div>
 <h2>Open positions</h2><div class=tb><table id=t3></table></div>
 <h2>Live prices</h2><p class=cap id=mk></p>
@@ -290,7 +309,7 @@ td.pos{color:var(--b);font-weight:700}td.neg{color:var(--a);font-weight:700}
 <h2>How the markets move together</h2>
 <p class=cap>Hourly moves over the last year. Blue: move together. Amber: move opposite. Take Buy and Sell trades from different groups, not from a pair that moves opposite.</p>
 <div class=tb><table id=t5></table></div>
-<div id=nt style="margin-top:22px"></div><div class=strip id=sp></div>
+<div style="margin-top:22px"></div><div class=strip id=sp></div>
 <h2>Strategies across all pairs</h2>
 <p class=cap>Results on data the strategy had not seen (last third of the period).</p>
 <div class=tb><table id=t1></table></div>
@@ -340,13 +359,14 @@ function summary(R){const m={};
 async function load(){
  let d;try{d=await (await fetch('/state')).json()}catch(e){$('br').innerHTML='<span class="dot warn"></span>Server is waking up, please wait up to a minute...';return}
  const R=d.results,f=d.fetch;bridge(d.bridge);live(d.live);corr(d.corr);
- $('st').textContent=f.status=='running'?'Downloading history: '+f.now+' '+f.pct+'% ('+f.done+' of '+f.total+' pairs)':d.status=='running'?'Running backtest...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
+ $('st').textContent=f.status=='running'?'Downloading: '+f.now+' · '+f.step+(f.step=='downloading'?' '+f.pct+'%':'')+' ('+f.done+' of '+f.total+' pairs)':d.status=='running'?'Running backtest...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
  const T=R.reduce((s,r)=>s+(r.oos.n||0),0),P=R.filter(r=>r.ok).length;
  let fr='',to='',days=0;
  if(R.length){fr=R.map(r=>r.from).sort()[0];to=R.map(r=>r.to).sort().pop();days=Math.round((new Date(to)-new Date(fr))/864e5)}
  const pairs=new Set(R.map(r=>r.sym)).size;
  $('sp').innerHTML='<div><b>'+pairs+'</b><span>pairs tested</span></div><div><b>'+days+' days</b><span>'+(fr?fr+' to '+to:'no data yet')+'</span></div><div><b>'+T+'</b><span>trades on unseen data</span></div><div><b>'+P+' of '+R.length+'</b><span>pair and strategy tests passed</span></div>';
  let nt='';
+ if(f.status=='running')nt+='<div class=note><b>Download progress</b><br>Days with data: '+f.ok+' · empty days: '+f.empty+' · failed days: '+f.fail+(f.err?'<br>Last problem: '+f.err:'')+'</div>';
  if(f.failed&&f.failed.length)nt+='<div class=note><b>Could not download:</b><br>'+f.failed.join('<br>')+'</div>';
  if(R.length&&days<180)nt+='<div class=note>Only '+days+' days of data. Treat these results as early signs, not proof.</div>';
  $('nt').innerHTML=nt;
