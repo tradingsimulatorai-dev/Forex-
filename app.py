@@ -8,7 +8,8 @@ KEY = os.environ.get("API_KEY", "")
 os.makedirs(DATA, exist_ok=True)
 
 try:
-    initial_results = run_all(DATA)
+    res_list = run_all(DATA)
+    initial_results = res_list if res_list else []
 except:
     initial_results = []
 
@@ -52,7 +53,6 @@ def ingest():
     if not sym:
         return "no symbol", 400
     
-    # Accept any symbol containing BTC or allow general ingest if needed
     body = request.get_data(as_text=True).strip()
     p = f"{DATA}/{sym}_M15.csv"
     new = request.args.get("reset") == "1" or not os.path.exists(p)
@@ -220,4 +220,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-            
+    
