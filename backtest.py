@@ -6,36 +6,41 @@ def run_all(folder, k=1.5, m=3.0):
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, "BTCUSDTm_M15.csv")
     
-    # If file doesn't exist, create initial structure for live market
     if not os.path.exists(path):
-        dates = pd.date_range(end=pd.Timestamp.now(), periods=200, freq='15min')
-        df = pd.DataFrame({
-            'time': dates.strftime('%Y-%m-%d %H:%M:%S'),
-            'open': 65000.0, 'high': 65100.0, 'low': 64900.0, 'close': 65050.0, 'volume': 1000
-        })
-        df.to_csv(path, index=False)
+        return []
     
     df = pd.read_csv(path)
-    if len(df) == 0:
+    if len(df) < 5 or 'close' not in df.columns:
         return []
 
-    # Real calculation based on available candles
-    df['returns'] = df['close'].pct_change()
-    wins = len(df[df['returns'] > 0])
-    total = max(len(df.dropna()) - 1, 1)
-    wr = round((wins / total) * 100, 2)
+    # Pure Real Calculation on MT4 Data
+    df['returns'] = df['close'].diff()
+    winning_trades = df[df['returns'] > 0]
+failing_trades = df[df['returns'] < 0]
     
-    gp = df[df['returns'] > 0]['returns'].sum()
-    gl = abs(df[df['returns'] < 0]['returns'].sum())
-    pf = round(gp / gl, 2) if gl > 0 else 1.85
+    total_trades = len(df) - 1
+    if total_trades <= 0:
+        return []
+
+    win_rate = round((len(winning_trades) / total_trades) * 100, 2)
+    
+    gross_profit = winning_trades['returns'].sum()
+    gross_loss = abs(failing_trades['returns'].sum())
+    
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (2.0 if gross_profit > 0 else 1.0)
+    expectancy = round(df['returns'].mean(), 4)
 
     return [{
         "sym": "BTCUSDTm",
-        "strat": "Real Price Action Core",
-        "oos": {"n": total, "wr": wr if wr > 0 else 68.5, "pf": pf if pf > 0 else 1.92, "exp": 0.45},
-        "ok": True,
+        "strat": "MT4 Real Price Action",
+        "oos": {
+            "n": int(total_trades), 
+            "wr": win_rate, 
+            "pf": profit_factor, 
+            "exp": expectancy
+        },
+        "ok": profit_factor >= 1.1 and win_rate >= 40.0,
         "bars": len(df),
         "from": str(df['time'].iloc[0])[:10] if 'time' in df.columns else "Live",
         "to": str(df['time'].iloc[-1])[:10] if 'time' in df.columns else "Live"
     }]
-    
