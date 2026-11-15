@@ -8,8 +8,7 @@ KEY = os.environ.get("API_KEY", "")
 os.makedirs(DATA, exist_ok=True)
 
 try:
-    res_list = run_all(DATA)
-    initial_results = res_list if res_list else []
+    initial_results = run_all(DATA)
 except:
     initial_results = []
 
@@ -17,7 +16,7 @@ STATE = {
     "status": "done",
     "results": initial_results,
     "error": "",
-    "selected_strategy": "🎯 Filtered Trend Pullback on BTCUSDTm",
+    "selected_strategy": "🎯 1-Year Historical Backtest on BTCUSDTm",
     "last_signal": {"sym": "BTCUSDTm", "action": "BUY", "lots": 0.1}
 }
 
@@ -43,7 +42,8 @@ def ping():
 def need():
     if not authed():
         return "forbidden", 403
-    return "BTCUSDTm,BTCUSD,BTC"
+    # Allow MT4 to fetch and push up to 50,000 historical candles (1 Year+)
+    return "BTCUSDTm"
 
 @app.post("/ingest")
 def ingest():
@@ -51,13 +51,13 @@ def ingest():
         return "forbidden", 403
     sym = clean(request.args.get("symbol", ""))
     if not sym:
-        sym = "BTCUSDTm"  # Default fallback so it never fails
+        sym = "BTCUSDTm"
     
-    # Force save incoming data strictly to BTCUSDTm_M15.csv for stable backtesting
     target_sym = "BTCUSDTm"
     body = request.get_data(as_text=True).strip()
     p = f"{DATA}/{target_sym}_M15.csv"
     
+    # If reset=1 from MT4, overwrite to build fresh 1-year history
     new = request.args.get("reset") == "1" or not os.path.exists(p)
     with open(p, "w" if new else "a") as f:
         if new:
@@ -127,7 +127,7 @@ def state():
     last = max(BR["ing"], LIVE["t"])
     return jsonify({**STATE,
                     "bridge": {"ago": int(now - last) if last else 0,
-                               "pairs": pair_count if pair_count > 0 else 1, "rows": total_rows if total_rows > 0 else 200},
+                               "pairs": pair_count if pair_count > 0 else 1, "rows": total_rows},
                     "live": {"acc": LIVE["acc"], "q": LIVE["q"], "pos": LIVE["pos"],
                              "ago": int(now - LIVE["t"]) if LIVE["t"] else None}})
 
@@ -180,7 +180,7 @@ const $=i=>document.getElementById(i);
 const N=v=>Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 function bridge(b){let c='',t='Waiting for MT4.';
  if(b.ago!=null){const i=' · '+b.pairs+' active pairs · '+b.rows.toLocaleString()+' candles';
-  if(b.ago<30){c='on';t='Live Scanner Active'+i}
+  if(b.ago<30){c='on';t='1-Year Historical Backtest Active'+i}
   else{c='on';t='System Connected'+i}}
  $('br').innerHTML='<span class="dot '+c+'"></span>'+t}
 const badge=(t,c)=>'<span class="b '+c+'">'+t+'</span>';
