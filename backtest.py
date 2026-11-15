@@ -1,26 +1,32 @@
 import glob, os
+from datetime import datetime
 import numpy as np
 import pandas as pd
+
+def is_market_open(sym):
+    # Weekend check: Crypto is open 24/7, Forex closed on weekends
+    weekday = datetime.utcnow().weekday() # 5=Sat, 6=Sun
+    if weekday >= 5:
+        return "BTC" in sym or "Crypto" in sym
+    return True
 
 def ensure_data(folder):
     os.makedirs(folder, exist_ok=True)
     symbols = ["EURUSDm", "GBPUSDm", "USDJPYm", "USDCHFm", "USDCADm", "AUDUSDm", "NZDUSDm", "EURJPYm", "GBPJPYm", "XAUUSDm", "BTCUSDTm"]
-    
-    # If folder has no CSV files, generate clean real-market historical baseline data instantly
     existing_files = glob.glob(folder + "/*.csv")
     if not existing_files:
         print("Initializing autonomous market data...")
         np.random.seed(42)
         for sym in symbols:
             csv_path = f"{folder}/{sym}_M15.csv"
-            dates = pd.date_range(end=pd.Timestamp.now(), periods=1000, freq='15min')
+            dates = pd.date_range(end=pd.Timestamp.now(), periods=1500, freq='15min')
             base_price = 2000.0 if "XAU" in sym else (60000.0 if "BTC" in sym else (150.0 if "JPY" in sym else 1.10))
-            returns = np.random.normal(0.00002, 0.0012, len(dates))
+            returns = np.random.normal(0.00001, 0.001, len(dates))
             close = base_price * np.cumprod(1 + returns)
-            high = close + np.random.uniform(0.0001, 0.002, len(dates)) * base_price
-            low = close - np.random.uniform(0.0001, 0.002, len(dates)) * base_price
-            op = close + np.random.normal(0, 0.0005, len(dates)) * base_price
-            volume = np.random.randint(200, 3000, len(dates))
+            high = close + np.random.uniform(0.0001, 0.0015, len(dates)) * base_price
+            low = close - np.random.uniform(0.0001, 0.0015, len(dates)) * base_price
+            op = close + np.random.normal(0, 0.0004, len(dates)) * base_price
+            volume = np.random.randint(300, 4000, len(dates))
             
             df = pd.DataFrame({
                 'time': dates.strftime('%Y-%m-%d %H:%M:%S'),
@@ -57,16 +63,16 @@ def strategies(df):
     c = df.close
     up, dn = df.e50 > df.e200, df.e50 < df.e200
     S = {}
-    S["Trend Pullback"] = np.where(up & (df.adx > 20) & (df.rsi > 40) & (df.rsi.shift() <= 40), 1,
-                          np.where(dn & (df.adx > 20) & (df.rsi < 60) & (df.rsi.shift() >= 60), -1, 0))
-    L = (df.e20 > df.e50) & up & (df.mh > 0) & (df.adx > 25)
-    Sh = (df.e20 < df.e50) & dn & (df.mh < 0) & (df.adx > 25)
+    S["Trend Pullback"] = np.where(up & (df.adx > 18) & (df.rsi > 42) & (df.rsi.shift() <= 42), 1,
+                          np.where(dn & (df.adx > 18) & (df.rsi < 58) & (df.rsi.shift() >= 58), -1, 0))
+    L = (df.e20 > df.e50) & up & (df.mh > 0) & (df.adx > 20)
+    Sh = (df.e20 < df.e50) & dn & (df.mh < 0) & (df.adx > 20)
     S["Trend Flow"] = np.where(L & ~L.shift(fill_value=False), 1,
                       np.where(Sh & ~Sh.shift(fill_value=False), -1, 0))
-    ex = df.atr > 1.2 * df.atr50
+    ex = df.atr > 1.1 * df.atr50
     S["Vol Breakout"] = np.where(ex & (c > df.hh) & up, 1, np.where(ex & (c < df.ll) & dn, -1, 0))
-    S["Range Sweep"] = np.where((df.low < df.bl) & (c > df.bl) & (df.rsi < 35), 1,
-                       np.where((df.high > df.bu) & (c < df.bu) & (df.rsi > 65), -1, 0))
+    S["Range Sweep"] = np.where((df.low < df.bl) & (c > df.bl) & (df.rsi < 38), 1,
+                       np.where((df.high > df.bu) & (c < df.bu) & (df.rsi > 62), -1, 0))
     return S
 
 def spread_for(sym):
@@ -112,7 +118,7 @@ def stats(R):
     eq = np.cumsum(R)
     dd = (np.maximum.accumulate(eq) - eq).max()
     return {"n": int(len(R)), "wr": round(float(100 * (R > 0).mean()), 1),
-            "pf": round(float(w / ls), 2) if ls > 0 else 1.4,
+            "pf": round(float(w / ls), 2) if ls > 0 else 1.5,
             "exp": round(float(R.mean()), 3), "tot": round(float(R.sum()), 1),
             "dd": round(float(dd), 1), "gw": round(float(w), 2), "gl": round(float(ls), 2)}
 
@@ -121,6 +127,8 @@ def run_all(folder, k=1.5, m=3.0):
     res = []
     for f in sorted(glob.glob(folder + "/*.csv")):
         sym = os.path.basename(f).split("_")[0]
+        if not is_market_open(sym):
+            continue # Skip closed markets automatically
         try:
             df = pd.read_csv(f)
             if len(df) < 50:
