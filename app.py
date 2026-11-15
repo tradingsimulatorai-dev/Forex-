@@ -42,8 +42,7 @@ def ping():
 def need():
     if not authed():
         return "forbidden", 403
-    # Force focus strictly on BTCUSDTm since other markets are closed
-    return "BTCUSDTm"
+    return "BTCUSDTm,BTCUSD,BTC"
 
 @app.post("/ingest")
 def ingest():
@@ -53,10 +52,7 @@ def ingest():
     if not sym:
         return "no symbol", 400
     
-    # Ignore any non-BTC symbols if market is closed
-    if "BTC" not in sym.upper():
-        return "ignored closed market", 200
-
+    # Accept any symbol containing BTC or allow general ingest if needed
     body = request.get_data(as_text=True).strip()
     p = f"{DATA}/{sym}_M15.csv"
     new = request.args.get("reset") == "1" or not os.path.exists(p)
@@ -180,7 +176,7 @@ const $=i=>document.getElementById(i);
 const N=v=>Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 function bridge(b){let c='',t='Waiting for MT4.';
  if(b.ago!=null){const i=' · '+b.pairs+' active pairs · '+b.rows.toLocaleString()+' candles';
-  if(b.ago<30){c='on';t='Live Scanner Active (BTC Only)'+i}
+  if(b.ago<30){c='on';t='Live Scanner Active'+i}
   else{c='on';t='System Connected'+i}}
  $('br').innerHTML='<span class="dot '+c+'"></span>'+t}
 const badge=(t,c)=>'<span class="b '+c+'">'+t+'</span>';
@@ -224,4 +220,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-    
+            
