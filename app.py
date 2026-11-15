@@ -10,25 +10,17 @@ os.makedirs(DATA, exist_ok=True)
 try:
     initial_results = run_all(DATA)
 except:
-    initial_results = [{
-        "sym": "BTCUSDTm",
-        "strat": "Real Price Action Core",
-        "oos": {"n": 15, "wr": 68.5, "pf": 1.92, "exp": 0.45},
-        "ok": True,
-        "bars": 200,
-        "from": "Live",
-        "to": "Live"
-    }]
+    initial_results = []
 
 STATE = {
     "status": "done",
     "results": initial_results,
     "error": "",
-    "selected_strategy": "🎯 Real Price Action Core on BTCUSDTm",
+    "selected_strategy": "🎯 MT4 Live Price Action on BTCUSDTm",
     "last_signal": {"sym": "BTCUSDTm", "action": "BUY", "lots": 0.1}
 }
 
-BR = {"ing": time.time(), "dirty": True, "rows": {"BTCUSDTm": 200}}
+BR = {"ing": time.time(), "dirty": True, "rows": {}}
 LIVE = {"acc": None, "q": {}, "pos": [], "t": 0.0}
 SIGNALS = [{"sym": "BTCUSDTm", "action": "BUY", "lots": 0.1}]
 LOCK = threading.Lock()
@@ -50,8 +42,9 @@ def ping():
 def need():
     if not authed():
         return "forbidden", 403
+    # Allow MT4 to send up to 5000 candles so it doesn't get stuck at 200
     names = [clean(x) for x in request.get_data(as_text=True).split(",")]
-    return ",".join(s for s in names if s and BR["rows"].get(s, 0) < 500)
+    return ",".join(s for s in names if s and BR["rows"].get(s, 0) < 5000)
 
 @app.post("/ingest")
 def ingest():
@@ -71,9 +64,10 @@ def ingest():
     BR["rows"][sym] = n if new else BR["rows"].get(sym, 0) + n
     BR["ing"], BR["dirty"] = time.time(), True
     
-    # Recalculate results dynamically upon new data ingestion
     try:
-        STATE["results"] = run_all(DATA)
+        res = run_all(DATA)
+        if res:
+            STATE["results"] = res
     except:
         pass
     return "ok"
@@ -116,6 +110,16 @@ def state():
     now = time.time()
     total_rows = sum(BR["rows"].values())
     pair_count = len(BR["rows"])
+    if pair_count == 0:
+        csv_files = glob.glob(DATA + "/*.csv")
+        pair_count = len(csv_files)
+        for f in csv_files:
+            try:
+                with open(f) as fh:
+                    total_rows += max(sum(1 for _ in fh) - 1, 0)
+            except:
+                pass
+
     last = max(BR["ing"], LIVE["t"])
     return jsonify({**STATE,
                     "bridge": {"ago": int(now - last) if last else 0,
@@ -216,4 +220,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-    
