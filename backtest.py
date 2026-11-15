@@ -49,6 +49,8 @@ def strategies(df):
 
 def spread_for(sym):
     # assumed average spread in price units (edit to match your broker)
+    if "BTC" in sym:
+        return 25.0
     if "XAU" in sym:
         return 0.30
     if "JPY" in sym:
@@ -96,7 +98,7 @@ def stats(R):
     return {"n": int(len(R)), "wr": round(float(100 * (R > 0).mean()), 1),
             "pf": round(float(w / ls), 2) if ls > 0 else 99.0,
             "exp": round(float(R.mean()), 3), "tot": round(float(R.sum()), 1),
-            "dd": round(float(dd), 1)}
+            "dd": round(float(dd), 1), "gw": round(float(w), 2), "gl": round(float(ls), 2)}
 
 
 def run_all(folder, k=1.5, m=3.0):
