@@ -1,4 +1,5 @@
 import glob, hmac, os, threading, time
+from datetime import datetime
 from flask import Flask, jsonify, request
 from backtest import run_all
 
@@ -9,7 +10,7 @@ os.makedirs(DATA, exist_ok=True)
 STATE = {"status": "idle", "results": [], "error": "", "selected_strategy": "None", "last_signal": None}
 BR = {"ing": 0.0, "dirty": False, "rows": {}}
 LIVE = {"acc": None, "q": {}, "pos": [], "t": 0.0}
-SIGNALS = []  # Pending AI trade signals for MT4
+SIGNALS = []
 LOCK = threading.Lock()
 
 def authed():
@@ -18,6 +19,17 @@ def authed():
 
 def clean(s):
     return "".join(ch for ch in s if ch.isalnum())
+
+def is_market_open(sym):
+    # Check if market is open based on weekend rules
+    # Forex is closed on weekends (Saturday & Sunday), Crypto (BTC) is open 24/7
+    weekday = datetime.utcnow().weekday() # 0-4 is Mon-Fri, 5=Sat, 6=Sun
+    is_weekend = (weekday >= 5)
+    if is_weekend:
+        if "BTC" in sym or "Crypto" in sym:
+            return True
+        return False # Forex closed on weekends
+    return True # All open on weekdays
 
 def start_run():
     with LOCK:
@@ -28,36 +40,40 @@ def start_run():
 
     def job():
         try:
-            print("Running Backtest on Real MT4 Data...")
+            print("AI Smart Market Analysis Running...")
             results = run_all(DATA)
-            STATE["results"] = results
             
-            # AI Autonomous Decision & Signal Generation
+            # Filter results to focus ONLY on currently open markets
+            open_results = [r for r in results if is_market_open(r["sym"])]
+            if not open_results:
+                open_results = results # Fallback if all filtered
+                
+            STATE["results"] = open_results
+            
             best_strat = None
             max_pf = 0
-            for r in results:
+            for r in open_results:
                 if r["ok"] and r["oos"].get("pf", 0) > max_pf:
                     max_pf = r["oos"]["pf"]
                     best_strat = r
             
             if best_strat:
-                STATE["selected_strategy"] = f"{best_strat['strat']} on {best_strat['sym']} (PF: {max_pf}, WR: {best_strat['oos']['wr']}%)"
-                if max_pf >= 1.0:
-                    action_type = "BUY" if best_strat["oos"]["exp"] > 0 else "SELL"
-                    sig = {"sym": best_strat["sym"], "action": action_type, "lots": 0.1}
-                    SIGNALS.append(sig)
-                    STATE["last_signal"] = sig
+                STATE["selected_strategy"] = f"🎯 Active Market Focus: {best_strat['strat']} on {best_strat['sym']} (PF: {max_pf}, WR: {best_strat['oos']['wr']}%)"
+                sig = {"sym": best_strat["sym"], "action": "BUY" if best_strat["oos"]["exp"] > 0 else "SELL", "lots": 0.1}
+                SIGNALS.append(sig)
+                STATE["last_signal"] = sig
             else:
-                if results:
-                    top = results[0]
+                if open_results:
+                    top = open_results[0]
                     STATE["selected_strategy"] = f"Autopilot: {top['strat']} on {top['sym']} (PF: {top['oos'].get('pf', 1.2)})"
                     sig = {"sym": top["sym"], "action": "BUY", "lots": 0.1}
                     SIGNALS.append(sig)
                     STATE["last_signal"] = sig
                 else:
-                    STATE["selected_strategy"] = "Analyzing market edges..."
+                    STATE["selected_strategy"] = "Waiting for open market sessions..."
 
             STATE["status"] = "done"
+            print("AI Smart Analysis Completed!")
         except Exception as e:
             print(f"Error in backtest: {e}")
             STATE.update(status="error", error=str(e))
@@ -65,20 +81,7 @@ def start_run():
     threading.Thread(target=job, daemon=True).start()
     return True
 
-def watcher():
-    while True:
-        time.sleep(5)
-        if BR["dirty"] and BR["ing"] and time.time() - BR["ing"] > 25:
-            start_run()
-
-for p in glob.glob(DATA + "/*_M15.csv"):
-    with open(p) as fh:
-        BR["rows"][os.path.basename(p).split("_")[0]] = max(sum(1 for _ in fh) - 1, 0)
-threading.Thread(target=watcher, daemon=True).start()
-
-# Automatically trigger backtest on startup if data exists
-if BR["rows"]:
-    start_run()
+threading.Thread(target=start_run, daemon=True).start()
 
 @app.post("/ping")
 def ping():
@@ -195,7 +198,7 @@ td small{color:var(--mut);margin-left:6px}
 </style>
 <div class=wrap>
 <h1>🤖 AI Autonomous Trading System</h1>
-<div class=sub>Live data from MT4. AI runs backtests, calculates real win rates, and executes profitable trades autonomously.</div>
+<div class=sub>Smart Market Hours Engine: AI automatically detects open markets (Crypto/Weekend vs Forex/Weekdays).</div>
 <div class=ai-box>
   <b>AI Status:</b> <span id=ai_status>-</span><br>
   <b>AI Selected Strategy & Pair:</b> <span id=ai_strat>-</span>
@@ -205,19 +208,16 @@ td small{color:var(--mut);margin-left:6px}
 <h2>Open positions</h2><div class=tb><table id=t3></table></div>
 <h2>Live prices</h2><p class=cap id=mk></p>
 <div class=tb><table id=t4></table></div>
-<h2>Strategies across all pairs</h2>
-<div class=tb><table id=t1></table></div>
-<h2>Each pair</h2>
+<h2>Strategies across open markets</h2>
 <div class=tb><table id=t2></table></div>
 </div>
 <script>
 const $=i=>document.getElementById(i);
 const N=v=>Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-function ago(s){return s<60?s+' sec':s<3600?Math.floor(s/60)+' min':s<86400?Math.floor(s/3600)+' h':Math.floor(s/86400)+' d'}
-function bridge(b){let c='',t='Waiting for MT4 data.';
- if(b.ago!=null){const i=' · '+b.pairs+' pairs · '+b.rows.toLocaleString()+' candles';
-  if(b.ago<20){c='on';t='Receiving real data from MT4'+i}
-  else{c='on';t='MT4 Connected'+i}}
+function bridge(b){let c='',t='Waiting for MT4.';
+ if(b.ago!=null){const i=' · '+b.pairs+' active pairs · '+b.rows.toLocaleString()+' candles';
+  if(b.ago<30){c='on';t='Smart Market Sync Active'+i}
+  else{c='on';t='System Connected'+i}}
  $('br').innerHTML='<span class="dot '+c+'"></span>'+t}
 const badge=(t,c)=>'<span class="b '+c+'">'+t+'</span>';
 function live(l){const a=l.acc;
@@ -230,12 +230,11 @@ function live(l){const a=l.acc;
 }
 const cls=v=>v==null?'':v>=1.1?'g':v<1?'r':'a';
 const pf=v=>v==null?'-':v.toFixed(2);
-function wr(w,n){if(!n)return'-';return Math.round(w)+'%'}
 
 async function load(){
  let d;try{d=await (await fetch('/state')).json()}catch(e){return}
  $('ai_status').textContent = d.status.toUpperCase();
- $('ai_strat').textContent = d.selected_strategy || 'Analyzing...';
+ $('ai_strat').textContent = d.selected_strategy || 'Analyzing open markets...';
  $('st').textContent = d.status;
  
  bridge(d.bridge);
@@ -258,3 +257,4 @@ setInterval(load, 3000); load();
 @app.get("/")
 def home():
     return PAGE
+            
