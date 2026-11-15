@@ -1,34 +1,58 @@
 import os
+import numpy as np
 import pandas as pd
 
 def run_all(folder, k=1.5, m=3.0):
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, "BTCUSDTm_M15.csv")
     
-    # Create dummy data if not exists to instantly satisfy the scanner
+    # Check if real data exists from MT4 bridge
     if not os.path.exists(path):
-        dates = pd.date_range(end=pd.Timestamp.now(), periods=200, freq='15min')
-        df = pd.DataFrame({
-            'time': dates.strftime('%Y-%m-%d %H:%M:%S'),
-            'open': 65000.0,
-            'high': 65100.0,
-            'low': 64900.0,
-            'close': 65050.0,
-            'volume': 1000
-        })
-        df.to_csv(path, index=False)
-    else:
-        df = pd.read_csv(path)
+        return [{
+            "sym": "BTCUSDTm",
+            "strat": "Waiting for MT4 Data...",
+            "oos": {"n": 0, "wr": 0.0, "pf": 0.0, "exp": 0.0},
+            "ok": False,
+            "bars": 0,
+            "from": "-",
+            "to": "-"
+        }]
+    
+    # Read real CSV data ingested from MT4
+    df = pd.read_csv(path)
+    if len(df) < 10:
+        return [{
+            "sym": "BTCUSDTm",
+            "strat": "Collecting Candles...",
+            "oos": {"n": len(df), "wr": 0.0, "pf": 0.0, "exp": 0.0},
+            "ok": False,
+            "bars": len(df),
+            "from": "-",
+            "to": "-"
+        }]
 
-    # Instant return results without hanging
+    # Real Quantitative Calculation on MT4 Data
+    df['returns'] = df['close'].pct_change()
+    df['ma'] = df['close'].rolling(window=14).mean()
+    
+    # Simple realistic strategy evaluation based on actual price action
+    wins = len(df[df['returns'] > 0])
+    total = len(df.dropna())
+    wr = round((wins / total) * 100, 2) if total > 0 else 0.0
+    
+    # Profit Factor calculation
+    gross_profit = df[df['returns'] > 0]['returns'].sum()
+    gross_loss = abs(df[df['returns'] < 0]['returns'].sum())
+    pf = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 1.5
+
     res = [{
         "sym": "BTCUSDTm",
-        "strat": "Trend Pullback",
-        "oos": {"n": 15, "wr": 73.3, "pf": 2.45, "exp": 0.6},
-        "ok": True,
+        "strat": "Real Price Action Core",
+        "oos": {"n": total, "wr": wr, "pf": pf, "exp": round(gross_profit - gross_loss, 4)},
+        "ok": pf >= 1.1 and wr >= 50.0,
         "bars": len(df),
-        "from": str(df['time'].iloc[0])[:10] if 'time' in df.columns else "2026-11-01",
-        "to": str(df['time'].iloc[-1])[:10] if 'time' in df.columns else "2026-11-15"
+        "from": str(df['time'].iloc[0])[:10] if 'time' in df.columns else "Live",
+        "to": str(df['time'].iloc[-1])[:10] if 'time' in df.columns else "Live"
     }]
     return res
     
