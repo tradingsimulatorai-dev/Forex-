@@ -192,11 +192,11 @@ h2{font-size:17px;margin:22px 0 2px}
 .cap{color:var(--mut);font-size:13px;margin:0 0 8px}
 .tb{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:10px}
 table{border-collapse:collapse;width:100%;min-width:420px}
-#t1,#t2{min-width:660px}
+#t1{min-width:660px}
 th{font-size:13px;color:var(--mut);font-weight:600;text-align:right;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
 td{padding:9px 12px;border-bottom:1px solid #edf0f4;text-align:right;white-space:nowrap}
 tr:last-child td{border-bottom:0}
-th:first-child,td:first-child,#t2 th:nth-child(2),td.l{text-align:left}
+th:first-child,td:first-child{text-align:left}
 td small{color:var(--mut);margin-left:6px}
 .m{color:#9aa3b2}
 .g{color:var(--g)}.r{color:var(--r)}.a{color:var(--a)}
@@ -217,11 +217,8 @@ td.pos{color:var(--b);font-weight:700}td.neg{color:var(--a);font-weight:700}
 <div class=tb><table id=t5></table></div>
 <div style="margin-top:22px"></div><div class=strip id=sp></div>
 <h2>Strategies across all pairs</h2>
-<p class=cap>Results on data the strategy had not seen (last third of the period).</p>
+<p class=cap>Results on data the strategy had not seen (last third of the period). The range next to win rate is a 95% range.</p>
 <div class=tb><table id=t1></table></div>
-<h2>Each pair</h2>
-<p class=cap>The range next to win rate is a 95% range. A wide range means too few trades to trust it.</p>
-<div class=tb><table id=t2></table></div>
 </div>
 <script>
 const $=i=>document.getElementById(i);
@@ -277,11 +274,6 @@ async function load(){
   const v=a.n<100?['Too few trades','a']:(a.pf>1.1&&a.ipf>1)?['Candidate','g']:['No edge','r'];
   h+='<tr><td>'+a.k+'<td>'+a.pairs+'<td>'+a.n+'<td>'+wr(a.w,a.n)+'<td class="'+cls(a.pf)+'">'+pf(a.pf)+'<td class="'+cls(a.ipf)+'">'+pf(a.ipf)+'<td>'+a.tot.toFixed(1)+'<td>'+badge(v[0],v[1])}
  $('t1').innerHTML=h;
- let g='<tr><th>Pair<th>Strategy<th>Trades<th>Win rate<th>PF<th>Earlier PF<th>Avg R<th>Max DD (R)<th>Verdict</tr>';
- for(const r of R){const o=r.oos;if(!o.n)continue;
-  const v=r.ok?['Passed','g']:o.n<30?['Too few trades','a']:['Unstable','r'];
-  g+='<tr><td>'+r.sym+'<td class=l>'+r.strat+'<td>'+o.n+'<td>'+wr(Math.round(o.wr*o.n/100),o.n)+'<td class="'+cls(o.pf)+'">'+pf(o.pf)+'<td class="'+cls(r.is.pf)+'">'+pf(r.is.pf)+'<td>'+o.exp+'<td>'+o.dd+'<td>'+badge(v[0],v[1])}
- $('t2').innerHTML=g;
 }
 setInterval(load,3000);load();
 </script>"""
