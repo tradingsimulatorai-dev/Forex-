@@ -9,9 +9,8 @@ HIST = DATA + "/hist"
 KEY = os.environ.get("API_KEY", "")
 os.makedirs(HIST, exist_ok=True)
 SL_MULT, TP_MULT = 1.5, 3.0  # stop = 1.5 x ATR, target = 3 x ATR (Risk:Reward 1:2)
-STATE = {"status": "idle", "results": [], "error": "", "src": "", "k": SL_MULT, "m": TP_MULT}
+STATE = {"status": "idle", "results": [], "error": "", "src": "Colab history", "k": SL_MULT, "m": TP_MULT}
 CORR = {"names": [], "m": []}
-BR = {"ing": 0.0, "dirty": False, "rows": {}}
 LIVE = {"acc": None, "q": {}, "pos": [], "t": 0.0}
 LOCK = threading.Lock()
 
@@ -43,22 +42,20 @@ def calc_corr(folder):  # how markets move together, from hourly moves
 
 
 def start_run():
-    folder = HIST if has_hist() else DATA
-    if not glob.glob(folder + "/*.csv"):
+    if not has_hist():
         return False
     with LOCK:
         if STATE["status"] == "running":
             return False
-        STATE.update(status="running", error="", src="Uploaded history" if folder == HIST else "MT4 data")
-    BR["dirty"] = False
+        STATE.update(status="running", error="")
 
     def job():
         try:
             try:
-                calc_corr(folder)
+                calc_corr(HIST)
             except Exception:
                 pass
-            STATE["results"] = run_all(folder, SL_MULT, TP_MULT)
+            STATE["results"] = run_all(HIST, SL_MULT, TP_MULT)
             STATE["status"] = "done"
         except Exception as e:
             STATE.update(status="error", error=str(e))
@@ -67,17 +64,6 @@ def start_run():
     return True
 
 
-def watcher():  # run 25s after MT4 candles stop arriving (only when no uploaded history)
-    while True:
-        time.sleep(5)
-        if BR["dirty"] and BR["ing"] and time.time() - BR["ing"] > 25 and not has_hist():
-            start_run()
-
-
-for p in glob.glob(DATA + "/*_M15.csv"):
-    with open(p) as fh:
-        BR["rows"][os.path.basename(p).split("_")[0]] = max(sum(1 for _ in fh) - 1, 0)
-threading.Thread(target=watcher, daemon=True).start()
 if has_hist():
     start_run()
 
@@ -87,32 +73,14 @@ def ping():
     return ("pong", 200) if authed() else ("forbidden", 403)
 
 
-@app.post("/need")  # EA asks: which of my pairs do you lack?
+@app.post("/need")  # MT4 candles are no longer used for backtesting
 def need():
-    if not authed():
-        return "forbidden", 403
-    names = [clean(x) for x in request.get_data(as_text=True).split(",")]
-    return ",".join(s for s in names if s and BR["rows"].get(s, 0) < 500)
+    return ("", 200) if authed() else ("forbidden", 403)
 
 
-@app.post("/ingest")  # candles from MT4
+@app.post("/ingest")  # accepted but ignored: backtests use only the Colab history
 def ingest():
-    if not authed():
-        return "forbidden", 403
-    sym = clean(request.args.get("symbol", ""))
-    if not sym:
-        return "no symbol", 400
-    body = request.get_data(as_text=True).strip()
-    p = f"{DATA}/{sym}_M15.csv"
-    new = request.args.get("reset") == "1" or not os.path.exists(p)
-    with open(p, "w" if new else "a") as f:
-        if new:
-            f.write("time,open,high,low,close,volume\n")
-        f.write(body + "\n")
-    n = body.count("\n") + 1 if body else 0
-    BR["rows"][sym] = n if new else BR["rows"].get(sym, 0) + n
-    BR["ing"], BR["dirty"] = time.time(), True
-    return "ok"
+    return ("ok", 200) if authed() else ("forbidden", 403)
 
 
 @app.post("/hist")  # one-year history uploaded from Colab
@@ -129,6 +97,17 @@ def hist():
             f.write("time,open,high,low,close,volume\n")
         f.write(request.get_data(as_text=True).strip() + "\n")
     return "ok"
+
+
+@app.post("/clear")  # Colab clears old history before uploading a new set
+def clear():
+    if not authed():
+        return "forbidden", 403
+    for p in glob.glob(HIST + "/*.csv"):
+        os.remove(p)
+    STATE.update(results=[], status="idle", error="")
+    CORR.update(names=[], m=[])
+    return "cleared"
 
 
 @app.post("/live")
@@ -159,10 +138,8 @@ def run():
 @app.get("/state")
 def state():
     now = time.time()
-    last = max(BR["ing"], LIVE["t"])
     return jsonify({**STATE, "corr": CORR,
-                    "bridge": {"ago": int(now - last) if last else None,
-                               "pairs": len(BR["rows"]), "rows": sum(BR["rows"].values())},
+                    "bridge": {"ago": int(now - LIVE["t"]) if LIVE["t"] else None, "pairs": len(LIVE["q"])},
                     "live": {"acc": LIVE["acc"], "q": LIVE["q"], "pos": LIVE["pos"],
                              "ago": int(now - LIVE["t"]) if LIVE["t"] else None}})
 
@@ -221,6 +198,8 @@ td{padding:10px 14px;border-bottom:1px solid #edf0f5;text-align:right;white-spac
 tr:last-child td{border-bottom:0}
 th:first-child,td:first-child{text-align:left}
 td small{color:var(--mut);margin-left:6px}
+#t6 th,#t6 td{text-align:center}#t6 th:first-child,#t6 td:first-child{text-align:left}
+#t6 td{line-height:1.3;padding:9px 12px}#t6 td b{font-size:17px}#t6 td small{display:block;margin:2px 0 0}
 .m{color:#9aa3b2}
 .g{color:var(--g)}.r{color:var(--r)}.a{color:var(--a)}
 .b{display:inline-block;padding:2px 10px;border-radius:99px;font-size:12px;font-weight:700;border:1px solid currentColor;white-space:nowrap}
@@ -228,8 +207,8 @@ td small{color:var(--mut);margin-left:6px}
 <div class=top><div class=in>
 <div class=brand>Strategy Lab</div>
 <h1>Strategy research</h1>
-<div class=sub>Live data from your MT4. Backtests run automatically whenever the server has new data.</div>
-<div class=chips><span class=chip id=br></span><span class=chip id=st>Waiting for data</span></div>
+<div class=sub>Live account data from your MT4. Backtests use one year of history uploaded from Colab and run automatically.</div>
+<div class=chips><span class=chip id=br></span><span class=chip id=st>Waiting for history</span></div>
 </div></div>
 <div class=wrap>
 <div id=hero></div>
@@ -237,13 +216,16 @@ td small{color:var(--mut);margin-left:6px}
 <h2>Strategy results</h2>
 <p class=cap id=rule></p>
 <div class=cards id=cards></div>
+<h2>By market</h2>
+<p class=cap>Every market tested separately on the unseen last third of the year. Bold = win rate. Under it: number of trades, and dollars won for every $1 lost. Green = passed the checks, red = losing, amber = unstable, grey = fewer than 30 trades.</p>
+<div class=tb><table id=t6></table></div>
 <h2>Account</h2>
 <div class=tiles id=ac></div>
 <h2>Open trades</h2><div class=tb><table id=t3></table></div>
 <h2>Live prices</h2><p class=cap id=mk></p>
 <div class=tb><table id=t4></table></div>
 <h2>Which markets move together</h2>
-<p class=cap>Based on hourly price moves. Blue = move together, amber = move opposite (darker means stronger). Take your Buy and Sell trades from different groups, not from a pair that moves opposite, otherwise you double the same bet.</p>
+<p class=cap>Based on hourly price moves over the year. Blue = move together, amber = move opposite (darker means stronger). Take your Buy and Sell trades from markets that are not strongly linked, otherwise you double the same bet.</p>
 <div class=tb><table id=t5></table></div>
 </div>
 <script>
@@ -252,9 +234,9 @@ const N=v=>Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFr
 function ago(s){return s<60?s+' sec':s<3600?Math.floor(s/60)+' min':s<86400?Math.floor(s/3600)+' h':Math.floor(s/86400)+' d'}
 const badge=(t,c)=>'<span class="b '+c+'">'+t+'</span>';
 function bridge(b){let c='',t='No data received from MT4 yet';
- if(b.ago!=null){const i=' · '+b.pairs+' markets · '+b.rows.toLocaleString()+' candles';
-  if(b.ago<20){c='on pulse';t='Receiving data from MT4 now'+i}
-  else if(b.ago<1200){c='on';t='MT4 connected · last data '+ago(b.ago)+' ago'+i}
+ if(b.ago!=null){const i=' · '+b.pairs+' live prices';
+  if(b.ago<20){c='on pulse';t='MT4 connected, live now'+i}
+  else if(b.ago<300){c='on';t='MT4 connected · last data '+ago(b.ago)+' ago'+i}
   else{c='warn';t='No data from MT4 for '+ago(b.ago)+'. Check the EA in MT4'+i}}
  $('br').innerHTML='<span class="dot '+c+'"></span>'+t}
 function live(l){const a=l.acc;
@@ -285,18 +267,17 @@ function summary(R){const m={};
   a.igw+=i.gw||0;a.igl+=i.gl||0}
  return Object.keys(m).map(k=>{const a=m[k];a.k=k;a.pf=a.gl?a.gw/a.gl:null;a.ipf=a.igl?a.igw/a.igl:null;return a}).sort((x,y)=>(y.pf||0)-(x.pf||0))}
 function hero(R,d){
- if(!R.length){$('hero').innerHTML='<div class=hero><div class=eyebrow>Verdict</div><div class=hh>Waiting for results</div><p>As soon as data arrives, the backtest runs by itself and the verdict appears here.</p></div>';$('nt').innerHTML='';return}
+ if(!R.length){$('hero').innerHTML='<div class=hero><div class=eyebrow>Verdict</div><div class=hh>Waiting for history</div><p>Run the Colab notebook to upload one year of data. The backtest then starts by itself and the verdict appears here.</p></div>';$('nt').innerHTML='';return}
  const S=summary(R),good=S.filter(a=>a.n>=100&&a.pf>1.1&&a.ipf>1);
  const fr=R.map(r=>r.from).sort()[0],to=R.map(r=>r.to).sort().pop(),days=Math.round((new Date(to)-new Date(fr))/864e5);
  const T=R.reduce((s,r)=>s+(r.oos.n||0),0),pairs=[...new Set(R.map(r=>r.sym))];
- const src=d.src=='Uploaded history'?'uploaded history':'MT4 data';
  $('hero').innerHTML='<div class="hero'+(good.length?' good':'')+'"><div class=eyebrow>Verdict</div><div class=hh>'+(good.length?'Promising: '+good.map(a=>a.k).join(', '):'No strategy is proven yet')+'</div><p>'
   +(good.length?'These made money in both the earlier and the recent part of the data. Still run them on a demo account before using real money.':'No strategy made money steadily in both the earlier and the recent part of the data. If one does, it will show here in green.')
-  +'</p><div class=facts><div><b>'+days+' days</b><span>'+fr+' to '+to+' · '+src+'</span></div><div><b>'+pairs.length+' markets</b><span>'+pairs.join(', ')+'</span></div><div><b>'+T.toLocaleString()+'</b><span>trades on unseen data</span></div></div></div>';
- $('nt').innerHTML=days<180?'<div class=note>Only '+days+' days of data. Treat these results as early hints, not proof. Upload one year of history to test properly.</div>':''}
+  +'</p><div class=facts><div><b>'+days+' days</b><span>'+fr+' to '+to+' · Colab history</span></div><div><b>'+pairs.length+' markets</b><span>'+pairs.join(', ')+'</span></div><div><b>'+T.toLocaleString()+'</b><span>trades on unseen data</span></div></div></div>';
+ $('nt').innerHTML=days<300?'<div class=note>Only '+days+' days of data. Upload a full year for a fair test.</div>':''}
 function cards(R,d){
  const sl=d.k||1.5,tp=d.m||3,rr=tp/sl,be=100/(1+rr),S=summary(R);
- $('rule').innerHTML='Every trade risks 1 unit, called <b>1R</b> (what you lose if the stop loss is hit). Stop loss = '+sl+' × ATR and take profit = '+tp+' × ATR, so a win pays '+rr+'R: <b>Risk : Reward = 1 : '+rr+'</b>. At this ratio you break even at about <b>'+be.toFixed(0)+'% wins</b> before costs (the black mark), a little more after spread. All numbers below come from the unseen last third of the data.';
+ $('rule').innerHTML='Every trade risks 1 unit, called <b>1R</b> (what you lose if the stop loss is hit). Stop loss = '+sl+' × ATR and take profit = '+tp+' × ATR, so a win pays '+rr+'R: <b>Risk : Reward = 1 : '+rr+'</b>. At this ratio you break even at about <b>'+be.toFixed(0)+'% wins</b> before costs (the black mark), a little more after spread. All markets combined, unseen last third of the data.';
  $('cards').innerHTML=S.map(a=>{
   const win=a.w/a.n*100,r=ci(a.w,a.n),avg=a.tot/a.n,col=win>=be+3?'var(--g)':win<be?'var(--r)':'var(--a)';
   const v=a.n<100?['Too few trades','a']:(a.pf>1.1&&a.ipf>1)?['Promising','g']:a.pf<1?['Losing','r']:['Unstable, not proven','a'];
@@ -309,10 +290,21 @@ function cards(R,d){
    +'<div class=row><span>Same, earlier part</span><b class="'+cls(a.ipf)+'">$'+pf(a.ipf)+'</b></div>'
    +'<div class=row><span>Average per trade</span><b class="'+(avg>=0?'g':'r')+'">'+(avg>=0?'+':'')+avg.toFixed(2)+'R</b></div>'
    +'<div class=row><span>Total result</span><b class="'+(a.tot>=0?'g':'r')+'">'+(a.tot>=0?'+':'')+a.tot.toFixed(1)+'R</b></div></div>'}).join('')}
+function matrix(R){
+ const syms=[...new Set(R.map(r=>r.sym))],strats=[...new Set(R.map(r=>r.strat))];
+ if(!syms.length){$('t6').innerHTML='<tr><td>Waiting for results</tr>';return}
+ let h='<tr><th>Market'+strats.map(s=>'<th>'+s).join('')+'</tr>';
+ for(const m of syms){h+='<tr><td><b>'+m+'</b>';
+  for(const s of strats){const r=R.find(x=>x.sym==m&&x.strat==s);
+   if(!r||!r.oos.n){h+='<td class=m>-';continue}
+   const o=r.oos,bg=o.n<30?'#f1f3f7':r.ok?'rgba(18,128,92,.16)':o.pf<1?'rgba(192,57,43,.13)':'rgba(183,121,31,.15)';
+   h+='<td style="background:'+bg+'"><b>'+Math.round(o.wr)+'%</b><small>'+o.n+' trades · $'+pf(o.pf)+'</small>'}
+  h+='</tr>'}
+ $('t6').innerHTML=h}
 async function load(){
  let d;try{d=await (await fetch('/state')).json()}catch(e){$('br').innerHTML='<span class="dot warn"></span>Server is waking up, please wait up to a minute...';return}
- const R=d.results;bridge(d.bridge);live(d.live);corr(d.corr);hero(R,d);cards(R,d);
- $('st').textContent=d.status=='running'?'Running backtest...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
+ const R=d.results;bridge(d.bridge);live(d.live);corr(d.corr);hero(R,d);cards(R,d);matrix(R);
+ $('st').textContent=d.status=='running'?'Running backtest...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for history';
 }
 setInterval(load,3000);load();
 </script>"""
