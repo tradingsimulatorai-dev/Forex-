@@ -168,104 +168,112 @@ def state():
 
 
 PAGE = r"""<!doctype html><meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1"><title>কৌশল গবেষণা</title>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Bengali:wght@400;600;700&family=Source+Sans+3:wght@400;600;700&display=swap" rel=stylesheet>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Strategy research</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel=stylesheet>
 <style>
-:root{--bg:#eef1f5;--ink:#14213d;--mut:#5b6678;--line:#d9dee7;--g:#1a7f4b;--r:#b4322b;--a:#a8650c;--b:#0b5cad}
+:root{--bg:#f3f5f9;--ink:#0f1b2d;--mut:#64708a;--line:#e1e6ef;--g:#12805c;--r:#c0392b;--a:#b7791f;--b:#0b5cad}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 "Noto Sans Bengali","Source Sans 3","Vrinda",system-ui,sans-serif;font-variant-numeric:tabular-nums}
-.wrap{max-width:1100px;margin:0 auto;padding:20px 16px 40px}
-h1{font-size:24px;margin:0;font-weight:700}
-.sub{color:var(--mut);font-size:14px;margin-bottom:14px}
-.bar{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:14px}
-.dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:8px;background:var(--r)}
-.dot.on{background:var(--g)}.dot.warn{background:var(--a)}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 "Plus Jakarta Sans",system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.top{background:linear-gradient(135deg,#0f2742 0%,#16486f 100%);color:#fff;padding:26px 16px 82px}
+.in,.wrap{max-width:1100px;margin:0 auto}
+.wrap{padding:0 16px 48px;margin-top:-58px}
+.brand{font-size:12px;letter-spacing:.14em;text-transform:uppercase;opacity:.7;font-weight:700}
+h1{font-size:28px;margin:4px 0 2px;font-weight:800;letter-spacing:-.02em}
+.sub{opacity:.8;font-size:14px;margin-bottom:14px;max-width:640px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:inline-flex;align-items:center;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.22);border-radius:99px;padding:5px 14px;font-size:13px}
+.dot{width:9px;height:9px;border-radius:50%;background:#f87171;margin-right:8px;flex:none}
+.dot.on{background:#34d399}.dot.warn{background:#fbbf24}
 .dot.pulse{animation:p 1.2s ease-in-out infinite}
-@keyframes p{0%,100%{box-shadow:0 0 0 0 rgba(26,127,75,.5)}50%{box-shadow:0 0 0 6px rgba(26,127,75,0)}}
-.pill{border:1px solid var(--line);border-radius:99px;padding:2px 12px;font-size:13px;color:var(--mut)}
-.hero{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
-.hh{font-size:21px;font-weight:700;line-height:1.35}
-.hero p{margin:6px 0 12px;color:var(--mut)}
-.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
-.facts div{border-top:1px solid var(--line);padding-top:8px}
-.facts b{display:block;font-size:19px}.facts span{color:var(--mut);font-size:13px}
-.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));background:#fff;border:1px solid var(--line);border-radius:10px;margin-bottom:14px}
-.strip div{padding:12px 16px;border-right:1px solid var(--line)}
-.strip div:last-child{border-right:0}
-.strip b{display:block;font-size:22px;line-height:1.3}
-.strip span{color:var(--mut);font-size:13px}
-.note{border-left:4px solid var(--a);background:#fff7e8;padding:10px 14px;margin-bottom:14px;border-radius:0 6px 6px 0;font-size:14px}
-h2{font-size:18px;margin:26px 0 4px}
-.cap{color:var(--mut);font-size:13.5px;margin:0 0 10px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
-.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-.ch{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
-.big{font-size:34px;font-weight:700;line-height:1.2}
-.big small{font-size:13px;color:var(--mut);font-weight:400;margin-left:6px}
-.barw{position:relative;height:9px;background:#e3e6ec;border-radius:5px;margin:10px 0 3px}
-.fill{height:9px;border-radius:5px;background:var(--b)}
-.mark{position:absolute;top:-4px;width:3px;height:17px;background:var(--ink);border-radius:2px}
+@keyframes p{0%,100%{box-shadow:0 0 0 0 rgba(52,211,153,.6)}50%{box-shadow:0 0 0 6px rgba(52,211,153,0)}}
+.card,.hero,.tiles div,.tb{background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:0 1px 2px rgba(15,27,45,.04),0 6px 18px rgba(15,27,45,.05)}
+.hero{padding:20px 22px;margin-bottom:16px;border-top:4px solid var(--r)}
+.hero.good{border-top-color:var(--g)}
+.eyebrow{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);font-weight:700}
+.hh{font-size:25px;font-weight:800;line-height:1.3;letter-spacing:-.01em;margin:4px 0}
+.hero p{margin:4px 0 14px;color:var(--mut);max-width:720px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.facts div{background:#f6f8fb;border-radius:10px;padding:10px 14px}
+.facts b{display:block;font-size:18px}.facts span{color:var(--mut);font-size:12.5px}
+.note{border-left:4px solid var(--a);background:#fff7e8;padding:10px 14px;margin-bottom:16px;border-radius:0 8px 8px 0;font-size:14px}
+h2{font-size:19px;font-weight:800;margin:30px 0 2px;letter-spacing:-.01em}
+.cap{color:var(--mut);font-size:13.5px;margin:0 0 12px;max-width:820px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:14px}
+.card{padding:16px 18px}
+.ch{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:4px}
+.ch b{font-size:16px}
+.big{font-size:36px;font-weight:800;line-height:1.2;letter-spacing:-.02em}
+.big small{font-size:13px;color:var(--mut);font-weight:600;margin-left:8px;letter-spacing:0}
+.barw{position:relative;height:10px;background:#e8ecf3;border-radius:6px;margin:12px 0 4px}
+.fill{height:10px;border-radius:6px}
+.mark{position:absolute;top:-4px;width:3px;height:18px;background:var(--ink);border-radius:2px}
 .bl{display:flex;justify-content:space-between;color:var(--mut);font-size:12px;margin-bottom:10px}
-.row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid #edf0f4;font-size:14px}
+.row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid #edf0f5;font-size:14px}
 .row span{color:var(--mut)}
-.tb{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:10px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+.tiles div{padding:14px 16px}
+.tiles span{display:block;color:var(--mut);font-size:12.5px;font-weight:600}
+.tiles b{font-size:23px;font-weight:800;letter-spacing:-.01em}
+.tb{overflow-x:auto}
 table{border-collapse:collapse;width:100%;min-width:420px}
-th{font-size:13px;color:var(--mut);font-weight:600;text-align:right;padding:9px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
-td{padding:9px 12px;border-bottom:1px solid #edf0f4;text-align:right;white-space:nowrap}
+th{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);font-weight:700;text-align:right;padding:10px 14px;border-bottom:1px solid var(--line);background:#f8fafc;white-space:nowrap}
+td{padding:10px 14px;border-bottom:1px solid #edf0f5;text-align:right;white-space:nowrap}
 tr:last-child td{border-bottom:0}
 th:first-child,td:first-child{text-align:left}
 td small{color:var(--mut);margin-left:6px}
 .m{color:#9aa3b2}
 .g{color:var(--g)}.r{color:var(--r)}.a{color:var(--a)}
-td.pos{color:var(--b);font-weight:700}td.neg{color:var(--a);font-weight:700}
-.b{display:inline-block;padding:1px 10px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid currentColor;white-space:nowrap}
+.b{display:inline-block;padding:2px 10px;border-radius:99px;font-size:12px;font-weight:700;border:1px solid currentColor;white-space:nowrap}
 </style>
+<div class=top><div class=in>
+<div class=brand>Strategy Lab</div>
+<h1>Strategy research</h1>
+<div class=sub>Live data from your MT4. Backtests run automatically whenever the server has new data.</div>
+<div class=chips><span class=chip id=br></span><span class=chip id=st>Waiting for data</span></div>
+</div></div>
 <div class=wrap>
-<h1>কৌশল গবেষণা</h1>
-<div class=sub>MT4 থেকে লাইভ তথ্য আসে, নতুন ডেটা এলে ব্যাকটেস্ট নিজে চলে।</div>
-<div class=bar><div id=br></div><span class=pill id=st>ডেটার অপেক্ষা</span></div>
 <div id=hero></div>
 <div id=nt></div>
-<h2>কৌশলের ফল</h2>
+<h2>Strategy results</h2>
 <p class=cap id=rule></p>
 <div class=cards id=cards></div>
-<h2>অ্যাকাউন্ট</h2>
-<div class=strip id=ac></div>
-<h2>খোলা ট্রেড</h2><div class=tb><table id=t3></table></div>
-<h2>লাইভ দাম</h2><p class=cap id=mk></p>
+<h2>Account</h2>
+<div class=tiles id=ac></div>
+<h2>Open trades</h2><div class=tb><table id=t3></table></div>
+<h2>Live prices</h2><p class=cap id=mk></p>
 <div class=tb><table id=t4></table></div>
-<h2>কোন বাজার একসাথে চলে</h2>
-<p class=cap>ঘণ্টাভিত্তিক দামের ওঠানামা মিলিয়ে। নীল = একসাথে চলে, কমলা = উল্টো চলে (+১ এর কাছে একসাথে, −১ এর কাছে উল্টো)। Buy আর Sell ট্রেড আলাদা গ্রুপ থেকে নিন, উল্টো চলা জোড়া থেকে নয়, তাহলে একই বাজি দ্বিগুণ হয় না।</p>
+<h2>Which markets move together</h2>
+<p class=cap>Based on hourly price moves. Blue = move together, amber = move opposite (darker means stronger). Take your Buy and Sell trades from different groups, not from a pair that moves opposite, otherwise you double the same bet.</p>
 <div class=tb><table id=t5></table></div>
 </div>
 <script>
 const $=i=>document.getElementById(i);
 const N=v=>Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-function ago(s){return s<60?s+' সেকেন্ড':s<3600?Math.floor(s/60)+' মিনিট':s<86400?Math.floor(s/3600)+' ঘণ্টা':Math.floor(s/86400)+' দিন'}
+function ago(s){return s<60?s+' sec':s<3600?Math.floor(s/60)+' min':s<86400?Math.floor(s/3600)+' h':Math.floor(s/86400)+' d'}
 const badge=(t,c)=>'<span class="b '+c+'">'+t+'</span>';
-function bridge(b){let c='',t='MT4 থেকে এখনো কোনো ডেটা আসেনি।';
- if(b.ago!=null){const i=' · '+b.pairs+'টা বাজার · '+b.rows.toLocaleString()+' ক্যান্ডেল';
-  if(b.ago<20){c='on pulse';t='MT4 থেকে এখন ডেটা আসছে'+i}
-  else if(b.ago<1200){c='on';t='MT4 সংযুক্ত · শেষ ডেটা '+ago(b.ago)+' আগে'+i}
-  else{c='warn';t='MT4 থেকে '+ago(b.ago)+' ধরে ডেটা আসছে না। MT4-এ EA চেক করুন।'+i}}
+function bridge(b){let c='',t='No data received from MT4 yet';
+ if(b.ago!=null){const i=' · '+b.pairs+' markets · '+b.rows.toLocaleString()+' candles';
+  if(b.ago<20){c='on pulse';t='Receiving data from MT4 now'+i}
+  else if(b.ago<1200){c='on';t='MT4 connected · last data '+ago(b.ago)+' ago'+i}
+  else{c='warn';t='No data from MT4 for '+ago(b.ago)+'. Check the EA in MT4'+i}}
  $('br').innerHTML='<span class="dot '+c+'"></span>'+t}
 function live(l){const a=l.acc;
- if(!a||l.ago==null||l.ago>60){$('ac').innerHTML='<div><b>-</b><span>MT4 থেকে অ্যাকাউন্টের তথ্যের অপেক্ষায়</span></div>';$('t3').innerHTML='';$('t4').innerHTML='';$('mk').innerHTML='';return}
+ if(!a||l.ago==null||l.ago>60){$('ac').innerHTML='<div><span>Account</span><b>-</b><span>Waiting for account data from MT4</span></div>';$('t3').innerHTML='';$('t4').innerHTML='';$('mk').innerHTML='';return}
  const bal=+a.bal,eq=+a.eq,f=eq-bal;
- $('ac').innerHTML='<div><b>'+N(bal)+'</b><span>ব্যালেন্স ('+a.cur+')</span></div><div><b>'+N(eq)+'</b><span>ইক্যুইটি</span></div><div><b class="'+(f>=0?'g':'r')+'">'+(f>=0?'+':'')+N(f)+'</b><span>চলমান লাভ/লস</span></div><div><b>'+(+a.lvl>0?(+a.lvl).toFixed(0)+'%':'-')+'</b><span>মার্জিন লেভেল</span></div><div><b>'+N(a.free)+'</b><span>ফ্রি মার্জিন</span></div>';
- let p='<tr><th>বাজার<th>দিক<th>লট<th>লাভ/লস</tr>';
- p+=l.pos.length?l.pos.map(x=>'<tr><td>'+x.s+'<td>'+x.d+'<td>'+x.lot+'<td class="'+(+x.pl>=0?'g':'r')+'">'+N(x.pl)+'</tr>').join(''):'<tr><td colspan=4>কোনো ট্রেড খোলা নেই</tr>';
+ $('ac').innerHTML='<div><span>Balance ('+a.cur+')</span><b>'+N(bal)+'</b></div><div><span>Equity</span><b>'+N(eq)+'</b></div><div><span>Floating P/L</span><b class="'+(f>=0?'g':'r')+'">'+(f>=0?'+':'')+N(f)+'</b></div><div><span>Margin level</span><b>'+(+a.lvl>0?(+a.lvl).toFixed(0)+'%':'-')+'</b></div><div><span>Free margin</span><b>'+N(a.free)+'</b></div>';
+ let p='<tr><th>Market<th>Side<th>Lots<th>Profit</tr>';
+ p+=l.pos.length?l.pos.map(x=>'<tr><td>'+x.s+'<td>'+x.d+'<td>'+x.lot+'<td class="'+(+x.pl>=0?'g':'r')+'">'+N(x.pl)+'</tr>').join(''):'<tr><td colspan=4>No open trades</tr>';
  $('t3').innerHTML=p;
  const keys=Object.keys(l.q),op=keys.filter(s=>l.q[s].age!=null&&l.q[s].age<300),cl=keys.filter(s=>!op.includes(s));
- $('mk').innerHTML='<b class=g>খোলা ('+op.length+'):</b> '+(op.join(', ')||'নেই')+'<br><b class=a>বন্ধ ('+cl.length+'):</b> '+(cl.join(', ')||'নেই');
- let q='<tr><th>বাজার<th>অবস্থা<th>Bid<th>Ask<th>Spread (পয়েন্ট)</tr>';
+ $('mk').innerHTML='<b class=g>Open now ('+op.length+'):</b> '+(op.join(', ')||'none')+'<br><b class=a>Closed ('+cl.length+'):</b> '+(cl.join(', ')||'none');
+ let q='<tr><th>Market<th>Status<th>Bid<th>Ask<th>Spread (points)</tr>';
  for(const s of keys){const x=l.q[s],o=op.includes(s),dec=(x.bid.split('.')[1]||'').length,m=o?'':' class=m';
-  q+='<tr><td>'+s+'<td>'+(o?badge('খোলা','g'):badge('বন্ধ','a')+'<small>শেষ টিক '+(x.age!=null&&x.age<99999?ago(x.age)+' আগে':'অজানা')+'</small>')+'<td'+m+'>'+x.bid+'<td'+m+'>'+x.ask+'<td'+m+'>'+(o?Math.round((x.ask-x.bid)*Math.pow(10,dec)):'-')+'</tr>'}
+  q+='<tr><td>'+s+'<td>'+(o?badge('Open','g'):badge('Closed','a')+'<small>last tick '+(x.age!=null&&x.age<99999?ago(x.age)+' ago':'unknown')+'</small>')+'<td'+m+'>'+x.bid+'<td'+m+'>'+x.ask+'<td'+m+'>'+(o?Math.round((x.ask-x.bid)*Math.pow(10,dec)):'-')+'</tr>'}
  $('t4').innerHTML=q}
 function corr(c){
- if(!c||!c.names.length){$('t5').innerHTML='<tr><td>ব্যাকটেস্ট শুরু হলে হিসাব হবে</tr>';return}
+ if(!c||!c.names.length){$('t5').innerHTML='<tr><td>Calculated when the backtest starts</tr>';return}
  let h='<tr><th><th>'+c.names.join('<th>')+'</tr>';
- c.names.forEach((n,i)=>{h+='<tr><td>'+n+c.m[i].map((v,j)=>'<td class="'+(i==j?'m':v>=.5?'pos':v<=-.5?'neg':'')+'">'+(i==j?'-':v.toFixed(2))).join('')+'</tr>'});
+ c.names.forEach((n,i)=>{h+='<tr><td>'+n+c.m[i].map((v,j)=>{if(i==j)return'<td class=m>-';const a=Math.min(Math.abs(v),1)*.6;return'<td style="background:'+(v>=0?'rgba(11,92,173,'+a+')':'rgba(217,119,6,'+a+')')+'">'+v.toFixed(2)}).join('')+'</tr>'});
  $('t5').innerHTML=h}
 function ci(w,n){const z=1.96,p=w/n,d=1+z*z/n,c=p+z*z/(2*n),m=z*Math.sqrt(p*(1-p)/n+z*z/(4*n*n));return[Math.round((c-m)/d*100),Math.round((c+m)/d*100)]}
 const cls=v=>v==null?'':v>=1.1?'g':v<1?'r':'a';
@@ -277,34 +285,34 @@ function summary(R){const m={};
   a.igw+=i.gw||0;a.igl+=i.gl||0}
  return Object.keys(m).map(k=>{const a=m[k];a.k=k;a.pf=a.gl?a.gw/a.gl:null;a.ipf=a.igl?a.igw/a.igl:null;return a}).sort((x,y)=>(y.pf||0)-(x.pf||0))}
 function hero(R,d){
- if(!R.length){$('hero').innerHTML='<div class=hero><div class=hh>ফলের অপেক্ষা</div><p>ডেটা এলে ব্যাকটেস্ট নিজে চলবে, ফল এখানে সবার উপরে আসবে।</p></div>';return}
+ if(!R.length){$('hero').innerHTML='<div class=hero><div class=eyebrow>Verdict</div><div class=hh>Waiting for results</div><p>As soon as data arrives, the backtest runs by itself and the verdict appears here.</p></div>';$('nt').innerHTML='';return}
  const S=summary(R),good=S.filter(a=>a.n>=100&&a.pf>1.1&&a.ipf>1);
  const fr=R.map(r=>r.from).sort()[0],to=R.map(r=>r.to).sort().pop(),days=Math.round((new Date(to)-new Date(fr))/864e5);
  const T=R.reduce((s,r)=>s+(r.oos.n||0),0),pairs=[...new Set(R.map(r=>r.sym))];
- const src=d.src=='Uploaded history'?'আপলোড করা ইতিহাস':'MT4-এর ডেটা';
- $('hero').innerHTML='<div class=hero><div class="hh '+(good.length?'g':'r')+'">'+(good.length?'সম্ভাবনাময়: '+good.map(a=>a.k).join(', '):'এখনো কোনো কৌশল প্রমাণিত নয়')+'</div><p>'
-  +(good.length?'এগুলো আগের ও শেষের দুই অংশেই লাভজনক ছিল। তবু ডেমোতে চালিয়ে মিলিয়ে দেখার আগে টাকা লাগাবেন না।':'কোনো কৌশল আগের ও শেষের দুই অংশেই স্থিরভাবে লাভ দেয়নি। দুই অংশেই লাভ হলে এখানে সবুজ হয়ে দেখা যাবে।')
-  +'</p><div class=facts><div><b>'+days+' দিন</b><span>'+fr+' থেকে '+to+' · '+src+'</span></div><div><b>'+pairs.length+'টা বাজার</b><span>'+pairs.join(', ')+'</span></div><div><b>'+T+'</b><span>ট্রেড (অদেখা অংশে)</span></div></div></div>';
- $('nt').innerHTML=days<180?'<div class=note>মাত্র '+days+' দিনের ডেটা। এই ফল শুধু আভাস, প্রমাণ নয়। ১ বছরের ইতিহাস আপলোড করুন।</div>':''}
+ const src=d.src=='Uploaded history'?'uploaded history':'MT4 data';
+ $('hero').innerHTML='<div class="hero'+(good.length?' good':'')+'"><div class=eyebrow>Verdict</div><div class=hh>'+(good.length?'Promising: '+good.map(a=>a.k).join(', '):'No strategy is proven yet')+'</div><p>'
+  +(good.length?'These made money in both the earlier and the recent part of the data. Still run them on a demo account before using real money.':'No strategy made money steadily in both the earlier and the recent part of the data. If one does, it will show here in green.')
+  +'</p><div class=facts><div><b>'+days+' days</b><span>'+fr+' to '+to+' · '+src+'</span></div><div><b>'+pairs.length+' markets</b><span>'+pairs.join(', ')+'</span></div><div><b>'+T.toLocaleString()+'</b><span>trades on unseen data</span></div></div></div>';
+ $('nt').innerHTML=days<180?'<div class=note>Only '+days+' days of data. Treat these results as early hints, not proof. Upload one year of history to test properly.</div>':''}
 function cards(R,d){
  const sl=d.k||1.5,tp=d.m||3,rr=tp/sl,be=100/(1+rr),S=summary(R);
- $('rule').innerHTML='প্রতি ট্রেডে লস সীমা (SL) = '+sl+' × ATR, লাভের লক্ষ্য (TP) = '+tp+' × ATR, তাই <b>Risk : Reward = 1 : '+rr+'</b>। এই অনুপাতে খরচ ছাড়া প্রায় <b>'+be.toFixed(0)+'%</b> জিতলে লাভ-লোকসান সমান, spread ধরলে আরও একটু বেশি লাগে (কার্ডের কালো দাগ)। R মানে এক ট্রেডে যতটা ঝুঁকি নেন। সব সংখ্যা অদেখা অংশের (শেষ এক-তৃতীয়াংশ)।';
+ $('rule').innerHTML='Every trade risks 1 unit, called <b>1R</b> (what you lose if the stop loss is hit). Stop loss = '+sl+' × ATR and take profit = '+tp+' × ATR, so a win pays '+rr+'R: <b>Risk : Reward = 1 : '+rr+'</b>. At this ratio you break even at about <b>'+be.toFixed(0)+'% wins</b> before costs (the black mark), a little more after spread. All numbers below come from the unseen last third of the data.';
  $('cards').innerHTML=S.map(a=>{
-  const win=a.w/a.n*100,r=ci(a.w,a.n),avg=a.tot/a.n;
-  const v=a.n<100?['ট্রেড কম','a']:(a.pf>1.1&&a.ipf>1)?['সম্ভাবনাময়','g']:a.pf<1?['লোকসানি','r']:['অস্থির, প্রমাণ নেই','a'];
+  const win=a.w/a.n*100,r=ci(a.w,a.n),avg=a.tot/a.n,col=win>=be+3?'var(--g)':win<be?'var(--r)':'var(--a)';
+  const v=a.n<100?['Too few trades','a']:(a.pf>1.1&&a.ipf>1)?['Promising','g']:a.pf<1?['Losing','r']:['Unstable, not proven','a'];
   return '<div class=card><div class=ch><b>'+a.k+'</b>'+badge(v[0],v[1])+'</div>'
-   +'<div class=big>'+win.toFixed(0)+'%<small>জিতেছে ('+r[0]+'-'+r[1]+'%)</small></div>'
-   +'<div class=barw><div class=fill style="width:'+Math.min(win/60*100,100)+'%"></div><div class=mark style="left:'+(be/60*100)+'%"></div></div>'
-   +'<div class=bl><span>0%</span><span>লাভের সীমা '+be.toFixed(0)+'%</span><span>60%</span></div>'
-   +'<div class=row><span>ট্রেড সংখ্যা</span><b>'+a.n+'</b></div>'
-   +'<div class=row><span>প্রতি $1 হারালে জিতেছেন</span><b class="'+cls(a.pf)+'">$'+pf(a.pf)+'</b></div>'
-   +'<div class=row><span>আগের অংশে ওই হিসাব</span><b class="'+cls(a.ipf)+'">$'+pf(a.ipf)+'</b></div>'
-   +'<div class=row><span>প্রতি ট্রেডে গড়</span><b class="'+(avg>=0?'g':'r')+'">'+(avg>=0?'+':'')+avg.toFixed(2)+'R</b></div>'
-   +'<div class=row><span>মোট</span><b class="'+(a.tot>=0?'g':'r')+'">'+(a.tot>=0?'+':'')+a.tot.toFixed(1)+'R</b></div></div>'}).join('')}
+   +'<div class=big>'+win.toFixed(0)+'%<small>win rate ('+r[0]+'-'+r[1]+'%)</small></div>'
+   +'<div class=barw><div class=fill style="width:'+Math.min(win/60*100,100)+'%;background:'+col+'"></div><div class=mark style="left:'+(be/60*100)+'%"></div></div>'
+   +'<div class=bl><span>0%</span><span>break-even '+be.toFixed(0)+'%</span><span>60%</span></div>'
+   +'<div class=row><span>Trades tested</span><b>'+a.n+'</b></div>'
+   +'<div class=row><span>Won per $1 lost</span><b class="'+cls(a.pf)+'">$'+pf(a.pf)+'</b></div>'
+   +'<div class=row><span>Same, earlier part</span><b class="'+cls(a.ipf)+'">$'+pf(a.ipf)+'</b></div>'
+   +'<div class=row><span>Average per trade</span><b class="'+(avg>=0?'g':'r')+'">'+(avg>=0?'+':'')+avg.toFixed(2)+'R</b></div>'
+   +'<div class=row><span>Total result</span><b class="'+(a.tot>=0?'g':'r')+'">'+(a.tot>=0?'+':'')+a.tot.toFixed(1)+'R</b></div></div>'}).join('')}
 async function load(){
- let d;try{d=await (await fetch('/state')).json()}catch(e){$('br').innerHTML='<span class="dot warn"></span>সার্ভার জাগছে, ১ মিনিট পর্যন্ত অপেক্ষা করুন...';return}
+ let d;try{d=await (await fetch('/state')).json()}catch(e){$('br').innerHTML='<span class="dot warn"></span>Server is waking up, please wait up to a minute...';return}
  const R=d.results;bridge(d.bridge);live(d.live);corr(d.corr);hero(R,d);cards(R,d);
- $('st').textContent=d.status=='running'?'ব্যাকটেস্ট চলছে...':d.status=='error'?'সমস্যা: '+d.error:R.length?'ফল তৈরি':'ডেটার অপেক্ষা';
+ $('st').textContent=d.status=='running'?'Running backtest...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
 }
 setInterval(load,3000);load();
 </script>"""
