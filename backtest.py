@@ -53,6 +53,12 @@ def spread_for(sym):
         return 25.0
     if "XAU" in sym:
         return 0.30
+    if "US500" in sym:
+        return 0.8
+    if "USOIL" in sym:
+        return 0.05
+    if "AUDNZD" in sym:
+        return 0.00025
     if "JPY" in sym:
         return 0.015
     return 0.00012
