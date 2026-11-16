@@ -1,250 +1,332 @@
-"""OHLC backtester for the Strategy Lab Flask app.
-
-CSV files must contain: time, open, high, low, close.
-The app expects run_all() to return results with sym, strat, from, to,
-is, oos and ok fields.
-"""
 import glob
+import json
 import os
+import subprocess
+import threading
+from datetime import datetime, timedelta, timezone
 
-import numpy as np
 import pandas as pd
+from flask import Flask, jsonify, request
+
+from backtest import run_all
 
 
-REQUIRED_COLUMNS = {"time", "open", "high", "low", "close"}
-STRATEGIES = ("EMA Trend", "EMA Crossover", "RSI Reversal")
+app = Flask(__name__)
+
+DATA_DIR = os.environ.get("DATA_DIR", "data")
+HIST_DIR = os.path.join(DATA_DIR, "hist")
+os.makedirs(HIST_DIR, exist_ok=True)
+
+# Six major pairs. Change this list if you want different pairs.
+PAIRS = [
+    "EURUSD",
+    "GBPUSD",
+    "AUDUSD",
+    "USDCHF",
+    "USDCAD",
+    "USDJPY",
+]
+
+SL_MULT = 1.5
+TP_MULT = 3.0
+
+STATE = {
+    "status": "starting",
+    "message": "Preparing historical data",
+    "results": [],
+    "error": "",
+    "updated_at": None,
+}
+LOCK = threading.Lock()
+JOB_LOCK = threading.Lock()
 
 
-def load_csv(path):
-    try:
-        df = pd.read_csv(path)
+# Calls the dukascopy-node package installed through package.json.
+NODE_DOWNLOAD_SCRIPT = r"""
+const { getHistoricalRates } = require("dukascopy-node");
 
-        if not REQUIRED_COLUMNS.issubset(df.columns):
-            return None
+async function main() {
+  const [instrument, from, to] = process.argv.slice(-3);
 
-        df = df.copy()
-        df["time"] = pd.to_datetime(
-            df["time"].astype(str).str.replace(".", "-", regex=False),
-            errors="coerce",
-            utc=True,
-        )
+  const data = await getHistoricalRates({
+    instrument: instrument.toLowerCase(),
+    dates: { from, to },
+    timeframe: "m15",
+    format: "json"
+  });
 
-        for column in ("open", "high", "low", "close"):
-            df[column] = pd.to_numeric(df[column], errors="coerce")
+  process.stdout.write(JSON.stringify(data));
+}
 
-        df = df.dropna(
-            subset=["time", "open", "high", "low", "close"]
-        )
-        df = df[df["high"] >= df["low"]]
-        df = df[df["close"] > 0]
-        df = df.drop_duplicates("time")
-        df = df.sort_values("time").reset_index(drop=True)
-
-        return df if len(df) >= 300 else None
-    except Exception:
-        return None
+main().catch((error) => {
+  console.error(error && error.stack ? error.stack : String(error));
+  process.exit(1);
+});
+"""
 
 
-def add_indicators(df):
-    df = df.copy()
+def download_pair(pair, start_date, end_date):
+    """Download a pair's M15 data and save it in app.py's CSV format."""
+    output_path = os.path.join(HIST_DIR, f"{pair}_M15.csv")
 
-    previous_close = df["close"].shift(1)
-    true_range = pd.concat(
+    completed = subprocess.run(
         [
-            df["high"] - df["low"],
-            (df["high"] - previous_close).abs(),
-            (df["low"] - previous_close).abs(),
+            "node",
+            "-e",
+            NODE_DOWNLOAD_SCRIPT,
+            pair.lower(),
+            start_date,
+            end_date,
         ],
-        axis=1,
-    ).max(axis=1)
+        capture_output=True,
+        text=True,
+        timeout=900,
+        check=False,
+    )
 
-    df["atr"] = true_range.ewm(
-        alpha=1 / 14,
-        adjust=False,
-        min_periods=14,
-    ).mean()
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or "Dukascopy download failed"
+        raise RuntimeError(f"{pair}: {message[-1500:]}")
 
-    df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
-    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
-    df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
+    try:
+        candles = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{pair}: downloader returned invalid JSON") from exc
 
-    change = df["close"].diff()
-    gains = change.clip(lower=0).ewm(
-        alpha=1 / 14,
-        adjust=False,
-        min_periods=14,
-    ).mean()
-    losses = (-change.clip(upper=0)).ewm(
-        alpha=1 / 14,
-        adjust=False,
-        min_periods=14,
-    ).mean()
+    if isinstance(candles, dict):
+        # Accommodate libraries that wrap the candle list in a result object.
+        candles = candles.get("data", candles.get("values", []))
 
-    relative_strength = gains / losses.replace(0, np.nan)
-    df["rsi"] = 100 - (100 / (1 + relative_strength))
-    df["rsi"] = df["rsi"].fillna(50)
+    if not isinstance(candles, list) or not candles:
+        raise RuntimeError(f"{pair}: no candles returned for the requested dates")
 
-    return df
-
-
-def get_signal(row, previous_row, strategy):
-    """Return 1 for buy, -1 for sell, or 0 for no signal."""
-    if strategy == "EMA Trend":
-        if row.ema20 > row.ema50 and row.close > row.ema200:
-            return 1
-        if row.ema20 < row.ema50 and row.close < row.ema200:
-            return -1
-
-    elif strategy == "EMA Crossover":
-        if previous_row.ema20 <= previous_row.ema50:
-            if row.ema20 > row.ema50:
-                return 1
-        if previous_row.ema20 >= previous_row.ema50:
-            if row.ema20 < row.ema50:
-                return -1
-
-    elif strategy == "RSI Reversal":
-        if previous_row.rsi < 30 and row.rsi >= 30:
-            return 1
-        if previous_row.rsi > 70 and row.rsi <= 70:
-            return -1
-
-    return 0
-
-
-def simulate(df, strategy, sl_mult, tp_mult):
-    """Simulate trades; each outcome is measured in R multiples."""
-    outcomes = []
-    i = 201
-
-    while i < len(df) - 1:
-        row = df.iloc[i]
-        previous_row = df.iloc[i - 1]
-        direction = get_signal(row, previous_row, strategy)
-
-        atr = float(row.atr) if pd.notna(row.atr) else 0.0
-        if direction == 0 or not np.isfinite(atr) or atr <= 0:
-            i += 1
+    rows = []
+    for candle in candles:
+        timestamp = candle.get("timestamp", candle.get("time"))
+        if timestamp is None:
             continue
 
-        entry_index = i + 1
-        entry_price = float(df.iloc[entry_index].open)
-        risk = atr * float(sl_mult)
+        # Dukascopy-node returns timestamps as Unix milliseconds.
+        if isinstance(timestamp, (int, float)):
+            dt = pd.to_datetime(timestamp, unit="ms", utc=True)
+        else:
+            dt = pd.to_datetime(timestamp, utc=True, errors="coerce")
 
-        if risk <= 0:
-            i += 1
+        if pd.isna(dt):
             continue
 
-        stop_price = entry_price - direction * risk
-        target_price = entry_price + direction * atr * float(tp_mult)
-        outcome = None
-        exit_index = entry_index
+        rows.append({
+            "time": dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "open": candle.get("open"),
+            "high": candle.get("high"),
+            "low": candle.get("low"),
+            "close": candle.get("close"),
+            "volume": candle.get("volume", 0),
+        })
 
-        for j in range(entry_index, len(df)):
-            candle = df.iloc[j]
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        raise RuntimeError(f"{pair}: downloaded data contains no usable candles")
 
-            if direction == 1:
-                stop_hit = float(candle.low) <= stop_price
-                target_hit = float(candle.high) >= target_price
-            else:
-                stop_hit = float(candle.high) >= stop_price
-                target_hit = float(candle.low) <= target_price
+    for column in ["open", "high", "low", "close", "volume"]:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
 
-            # If both levels are hit in one candle, assume stop-loss first.
-            if stop_hit:
-                outcome = -1.0
-                exit_index = j
-                break
+    frame = frame.dropna(subset=["time", "open", "high", "low", "close"])
+    frame = frame.drop_duplicates(subset=["time"]).sort_values("time")
 
-            if target_hit:
-                outcome = float(tp_mult) / float(sl_mult)
-                exit_index = j
-                break
+    if len(frame) < 300:
+        raise RuntimeError(
+            f"{pair}: only {len(frame)} usable candles received; "
+            "not enough for the backtest"
+        )
 
-        if outcome is None:
-            final_price = float(df.iloc[-1].close)
-            outcome = direction * (final_price - entry_price) / risk
-            exit_index = len(df) - 1
-
-        outcomes.append(float(outcome))
-        i = exit_index + 1
-
-    return outcomes
+    frame.to_csv(output_path, index=False)
+    return len(frame)
 
 
-def calculate_stats(outcomes):
-    count = len(outcomes)
-    wins = sum(value > 0 for value in outcomes)
-    gross_wins = sum(value for value in outcomes if value > 0)
-    gross_losses = abs(sum(value for value in outcomes if value < 0))
-    total = sum(outcomes)
+def fetch_and_backtest(force_download=True):
+    """Download a rolling year of history, then run the backtest."""
+    if not JOB_LOCK.acquire(blocking=False):
+        return
 
-    if gross_losses:
-        profit_factor = gross_wins / gross_losses
-    elif gross_wins:
-        profit_factor = 99.0
-    else:
-        profit_factor = None
-
-    return {
-        "n": count,
-        "w": wins,
-        "wr": (wins / count * 100) if count else 0.0,
-        "gw": gross_wins,
-        "gl": gross_losses,
-        "tot": total,
-        "pf": profit_factor,
-    }
-
-
-def run_all(folder, sl_mult=1.5, tp_mult=3.0):
-    """Run all example strategies against CSV files in the history folder."""
-    results = []
-
-    for path in sorted(glob.glob(os.path.join(folder, "*.csv"))):
-        raw_data = load_csv(path)
-        if raw_data is None:
-            continue
-
-        df = add_indicators(raw_data)
-        split_index = int(len(df) * 2 / 3)
-
-        for strategy in STRATEGIES:
-            in_sample = df.iloc[:split_index].reset_index(drop=True)
-
-            # Keep 201 earlier rows for indicator warmup; trades begin
-            # within the out-of-sample period.
-            out_of_sample = df.iloc[
-                max(0, split_index - 201):
-            ].reset_index(drop=True)
-
-            is_stats = calculate_stats(
-                simulate(in_sample, strategy, sl_mult, tp_mult)
-            )
-            oos_stats = calculate_stats(
-                simulate(out_of_sample, strategy, sl_mult, tp_mult)
+    try:
+        with LOCK:
+            STATE.update(
+                status="downloading",
+                message="Downloading one year of M15 data for six pairs",
+                error="",
             )
 
-            oos_pf = oos_stats["pf"]
-            is_pf = is_stats["pf"]
+        end = datetime.now(timezone.utc).date()
+        start = end - timedelta(days=365)
+        start_text = start.isoformat()
+        end_text = end.isoformat()
 
-            passed = (
-                oos_stats["n"] >= 30
-                and oos_pf is not None
-                and is_pf is not None
-                and oos_pf > 1.1
-                and is_pf > 1.0
+        # Download sequentially to avoid overloading the free Render instance.
+        for pair in PAIRS:
+            path = os.path.join(HIST_DIR, f"{pair}_M15.csv")
+
+            if not force_download and os.path.exists(path):
+                continue
+
+            with LOCK:
+                STATE["message"] = f"Downloading {pair} M15 history"
+
+            count = download_pair(pair, start_text, end_text)
+            print(f"Downloaded {count} candles for {pair}")
+
+        with LOCK:
+            STATE.update(
+                status="backtesting",
+                message="Running backtests",
             )
 
-            results.append({
-                "sym": os.path.basename(path).split("_")[0],
-                "strat": strategy,
-                "from": df["time"].iloc[0].strftime("%Y-%m-%d"),
-                "to": df["time"].iloc[-1].strftime("%Y-%m-%d"),
-                "is": is_stats,
-                "oos": oos_stats,
-                "ok": bool(passed),
-            })
+        results = run_all(HIST_DIR, SL_MULT, TP_MULT)
 
-    return results
-    
+        with LOCK:
+            STATE.update(
+                status="done",
+                message="Download and backtest complete",
+                results=results,
+                error="",
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+    except Exception as exc:
+        print(f"Data/backtest job failed: {exc}")
+        with LOCK:
+            STATE.update(
+                status="error",
+                message="Data download or backtest failed",
+                error=str(exc),
+            )
+    finally:
+        JOB_LOCK.release()
+
+
+def start_job(force_download=True):
+    thread = threading.Thread(
+        target=fetch_and_backtest,
+        args=(force_download,),
+        daemon=True,
+    )
+    thread.start()
+
+
+@app.get("/")
+def home():
+    return """
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Forex Strategy Lab</title>
+      <style>
+        body {
+          max-width: 1000px; margin: 32px auto; padding: 0 16px;
+          font: 16px system-ui, sans-serif; color: #172033;
+          background: #f4f6fa;
+        }
+        h1 { color: #123557; }
+        .box {
+          background: white; border: 1px solid #dce2eb;
+          border-radius: 12px; padding: 18px; margin: 16px 0;
+        }
+        button {
+          border: 0; border-radius: 8px; padding: 10px 16px;
+          color: white; background: #1261a0; font-size: 15px;
+        }
+        table { width: 100%; border-collapse: collapse; background: white; }
+        th, td { text-align: left; padding: 10px; border-bottom: 1px solid #e5e9f0; }
+        .small { color: #5d687a; font-size: 14px; }
+        .error { color: #b42318; }
+      </style>
+    </head>
+    <body>
+      <h1>Forex Strategy Lab</h1>
+      <p class="small">
+        Dukascopy M15 historical data; six currency pairs; rolling one-year test.
+        Example strategies only, not financial advice.
+      </p>
+      <div class="box">
+        <div id="status">Loading status...</div>
+        <p><button onclick="runAgain()">Download again and run backtest</button></p>
+      </div>
+      <div class="box">
+        <h2>Results</h2>
+        <div id="results">Waiting for results...</div>
+      </div>
+      <script>
+        async function refresh() {
+          try {
+            const response = await fetch("/state");
+            const data = await response.json();
+            const status = document.getElementById("status");
+            status.innerHTML =
+              "<b>Status:</b> " + data.status +
+              "<br><b>Progress:</b> " + data.message +
+              (data.updated_at ? "<br><b>Updated:</b> " + data.updated_at : "") +
+              (data.error ? '<br><span class="error"><b>Error:</b> ' + data.error + "</span>" : "");
+
+            const rows = data.results || [];
+            if (!rows.length) {
+              document.getElementById("results").textContent =
+                data.status === "error" ? "No results. Check the error above." :
+                "Data download/backtest is running or has not completed yet.";
+              return;
+            }
+
+            let html = "<table><thead><tr>" +
+              "<th>Pair</th><th>Strategy</th><th>OOS trades</th>" +
+              "<th>Win rate</th><th>Profit factor</th><th>Total R</th>" +
+              "</tr></thead><tbody>";
+
+            for (const item of rows) {
+              const o = item.oos || {};
+              html += "<tr><td>" + item.sym + "</td>" +
+                "<td>" + item.strat + "</td>" +
+                "<td>" + (o.n || 0) + "</td>" +
+                "<td>" + Number(o.wr || 0).toFixed(1) + "%</td>" +
+                "<td>" + (o.pf == null ? "-" : Number(o.pf).toFixed(2)) + "</td>" +
+                "<td>" + Number(o.tot || 0).toFixed(2) + "R</td></tr>";
+            }
+
+            document.getElementById("results").innerHTML =
+              html + "</tbody></table>";
+          } catch (error) {
+            document.getElementById("status").textContent =
+              "Could not reach the app yet. Render may be waking it up.";
+          }
+        }
+
+        async function runAgain() {
+          await fetch("/run", { method: "POST" });
+          refresh();
+        }
+
+        refresh();
+        setInterval(refresh, 5000);
+      </script>
+    </body>
+    </html>
+    """
+
+
+@app.get("/state")
+def state():
+    with LOCK:
+        return jsonify(STATE)
+
+
+@app.post("/run")
+def run():
+    # Starts a fresh download and backtest. This is intended for testing.
+    start_job(force_download=True)
+    return jsonify({"started": True, "status": "downloading"}), 202
+
+
+# On a fresh Render process, download again because Free filesystem data
+# disappears after spin-down, restart, or redeploy.
+start_job(force_download=True)
+        
