@@ -1,8 +1,5 @@
-import glob, hmac, lzma, os, struct, threading, time
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+import glob, hmac, os, threading, time
 import pandas as pd
-import requests
 from flask import Flask, jsonify, request
 from backtest import run_all
 
@@ -11,15 +8,9 @@ DATA = os.environ.get("DATA_DIR", "data")
 HIST = DATA + "/hist"
 KEY = os.environ.get("API_KEY", "")
 os.makedirs(HIST, exist_ok=True)
-UA = {"User-Agent": "Mozilla/5.0"}
-SYMS = ["EURUSD", "USDCHF", "GBPUSD", "AUDUSD", "USDCAD", "USDJPY", "XAUUSD"]
-RNG = {"EURUSD": (0.5, 2.5), "GBPUSD": (0.8, 2.5), "AUDUSD": (0.3, 1.5),
-       "USDCHF": (0.5, 1.5), "USDCAD": (0.9, 2.0), "USDJPY": (60, 250), "XAUUSD": (1000, 8000)}
-STATE = {"status": "idle", "results": [], "error": ""}
-FETCH = {"status": "idle", "done": 0, "total": len(SYMS), "now": "", "pct": 0, "failed": [],
-         "ok": 0, "empty": 0, "fail": 0, "err": "", "step": ""}
+STATE = {"status": "idle", "results": [], "error": "", "src": ""}
 CORR = {"names": [], "m": []}
-BR = {"ing": 0.0, "rows": {}}
+BR = {"ing": 0.0, "dirty": False, "rows": {}}
 LIVE = {"acc": None, "q": {}, "pos": [], "t": 0.0}
 LOCK = threading.Lock()
 
@@ -33,11 +24,16 @@ def clean(s):
     return "".join(ch for ch in s if ch.isalnum())
 
 
-def calc_corr():  # how markets move together, from hourly moves
+def has_hist():
+    return bool(glob.glob(HIST + "/*.csv"))
+
+
+def calc_corr(folder):  # how markets move together, from hourly moves
     cols = {}
-    for p in sorted(glob.glob(HIST + "/*.csv")):
+    for p in sorted(glob.glob(folder + "/*.csv")):
         s = pd.read_csv(p, usecols=["time", "close"])
-        s["time"] = pd.to_datetime(s["time"])
+        s["time"] = pd.to_datetime(s["time"].astype(str).str.replace(".", "-", regex=False))
+        s = s.drop_duplicates("time").sort_values("time")
         cols[os.path.basename(p).split("_")[0]] = s.set_index("time")["close"].resample("1h").last().pct_change()
     if len(cols) > 1:
         c = pd.DataFrame(cols).corr().round(2).fillna(0)
@@ -46,20 +42,22 @@ def calc_corr():  # how markets move together, from hourly moves
 
 
 def start_run():
-    if not glob.glob(HIST + "/*.csv"):
+    folder = HIST if has_hist() else DATA
+    if not glob.glob(folder + "/*.csv"):
         return False
     with LOCK:
         if STATE["status"] == "running":
             return False
-        STATE.update(status="running", error="")
+        STATE.update(status="running", error="", src="Uploaded history" if folder == HIST else "MT4 data")
+    BR["dirty"] = False
 
     def job():
         try:
             try:
-                calc_corr()
+                calc_corr(folder)
             except Exception:
                 pass
-            STATE["results"] = run_all(HIST)
+            STATE["results"] = run_all(folder)
             STATE["status"] = "done"
         except Exception as e:
             STATE.update(status="error", error=str(e))
@@ -68,127 +66,19 @@ def start_run():
     return True
 
 
-def day_rows(code, d):  # one day of 1-minute candles (open, close, low, high order)
-    url = (f"https://datafeed.dukascopy.com/datafeed/{code}/{d.year}/{d.month - 1:02d}/"
-           f"{d.day:02d}/BID_candles_min_1.bi5")
-    last = "failed"
-    for _ in range(2):
-        try:
-            r = requests.get(url, timeout=(5, 20), headers=UA)
-        except Exception as e:
-            last = type(e).__name__
-            time.sleep(1)
-            continue
-        if r.status_code == 404:
-            return []
-        if r.status_code == 200:
-            if not r.content:
-                return []
-            raw = lzma.LZMADecompressor().decompress(r.content)
-            base = datetime(d.year, d.month, d.day)
-            return [(base + timedelta(seconds=t), o, c, l, h, v)
-                    for t, o, c, l, h, v in struct.iter_unpack(">IIIIIf", raw[: len(raw) // 24 * 24])]
-        last = "HTTP " + str(r.status_code)
-        time.sleep(1)
-    raise RuntimeError(last)
-
-
-def pick_div(sym, rows):
-    lo, hi = RNG[sym]
-    med = sorted(r[2] for r in rows)[len(rows) // 2]
-    for div in (1e5, 1e4, 1e3, 100, 10, 1):
-        if lo <= med / div <= hi:
-            return div
-    raise RuntimeError("price scale not recognised")
-
-
-def to_m15(rows, div):
-    b = {}
-    for t, o, c, l, h, v in rows:
-        k = t.replace(minute=t.minute // 15 * 15, second=0)
-        o, c, l, h = o / div, c / div, l / div, h / div
-        x = b.get(k)
-        if x is None:
-            b[k] = [o, h, l, c, v]
-        else:
-            x[1], x[2], x[3], x[4] = max(x[1], h), min(x[2], l), c, x[4] + v
-    return b
-
-
-def fetch_sym(sym):
-    FETCH.update(pct=0, ok=0, empty=0, fail=0, err="", step="testing connection")
-    today = datetime.utcnow().date()
-    days = [today - timedelta(days=i) for i in range(1, 371)]
-    days = [d for d in days if d.weekday() != 5]
-    sample, bad = None, 0
-    for d in days[:12]:
-        try:
-            rows = day_rows(sym, d)
-        except Exception as e:
-            bad += 1
-            FETCH["err"] = f"{sym} {d}: {e}"
-            if bad >= 4:
-                raise RuntimeError(f"cannot reach Dukascopy ({e})")
-            continue
-        if rows:
-            sample = rows
-            break
-    if not sample:
-        raise RuntimeError("Dukascopy returned no data for the last days (404)")
-    div = pick_div(sym, sample)
-    good = sum(1 for t, o, c, l, h, v in sample if h >= max(o, c) and l <= min(o, c))
-    if good < 0.99 * len(sample):
-        raise RuntimeError("candle format check failed")
-    FETCH["step"] = "downloading"
-    out, fails = {}, 0
-
-    def work(d):
-        try:
-            return day_rows(sym, d)
-        except Exception as e:
-            FETCH["err"] = f"{sym} {d}: {e}"
-            return None
-
-    with ThreadPoolExecutor(6) as ex:
-        for i, rows in enumerate(ex.map(work, days)):
-            if rows is None:
-                fails += 1
-                FETCH["fail"] = fails
-            elif rows:
-                FETCH["ok"] += 1
-                out.update(to_m15(rows, div))
-            else:
-                FETCH["empty"] += 1
-            FETCH["pct"] = (i + 1) * 100 // len(days)
-    if fails > 25:
-        raise RuntimeError(f"{fails} days failed to download")
-    with open(f"{HIST}/{sym}_M15.csv", "w") as f:
-        f.write("time,open,high,low,close,volume\n")
-        for k in sorted(out):
-            o, h, l, c, v = out[k]
-            f.write(f"{k:%Y-%m-%d %H:%M:%S},{o},{h},{l},{c},{int(v)}\n")
-
-
-def fetch_all():
-    FETCH.update(status="running", done=0, now="", pct=0, failed=[])
-    for sym in SYMS:
-        FETCH["now"] = sym
-        try:
-            fetch_sym(sym)
-        except Exception as e:
-            FETCH["failed"].append(sym + ": " + str(e)[:110])
-        FETCH["done"] += 1
-    FETCH.update(status="done", step="")
-    start_run()
+def watcher():  # run 25s after MT4 candles stop arriving (only when no uploaded history)
+    while True:
+        time.sleep(5)
+        if BR["dirty"] and BR["ing"] and time.time() - BR["ing"] > 25 and not has_hist():
+            start_run()
 
 
 for p in glob.glob(DATA + "/*_M15.csv"):
     with open(p) as fh:
         BR["rows"][os.path.basename(p).split("_")[0]] = max(sum(1 for _ in fh) - 1, 0)
-if glob.glob(HIST + "/*.csv"):
+threading.Thread(target=watcher, daemon=True).start()
+if has_hist():
     start_run()
-else:
-    threading.Thread(target=fetch_all, daemon=True).start()
 
 
 @app.post("/ping")
@@ -204,7 +94,7 @@ def need():
     return ",".join(s for s in names if s and BR["rows"].get(s, 0) < 500)
 
 
-@app.post("/ingest")  # live candles from MT4 (kept for live trading later)
+@app.post("/ingest")  # candles from MT4
 def ingest():
     if not authed():
         return "forbidden", 403
@@ -220,7 +110,23 @@ def ingest():
         f.write(body + "\n")
     n = body.count("\n") + 1 if body else 0
     BR["rows"][sym] = n if new else BR["rows"].get(sym, 0) + n
-    BR["ing"] = time.time()
+    BR["ing"], BR["dirty"] = time.time(), True
+    return "ok"
+
+
+@app.post("/hist")  # one-year history uploaded from Colab
+def hist():
+    if not authed():
+        return "forbidden", 403
+    sym = clean(request.args.get("symbol", ""))
+    if not sym:
+        return "no symbol", 400
+    p = f"{HIST}/{sym}_M15.csv"
+    new = request.args.get("reset") == "1" or not os.path.exists(p)
+    with open(p, "w" if new else "a") as f:
+        if new:
+            f.write("time,open,high,low,close,volume\n")
+        f.write(request.get_data(as_text=True).strip() + "\n")
     return "ok"
 
 
@@ -253,7 +159,7 @@ def run():
 def state():
     now = time.time()
     last = max(BR["ing"], LIVE["t"])
-    return jsonify({**STATE, "fetch": FETCH, "corr": CORR,
+    return jsonify({**STATE, "corr": CORR,
                     "bridge": {"ago": int(now - last) if last else None,
                                "pairs": len(BR["rows"]), "rows": sum(BR["rows"].values())},
                     "live": {"acc": LIVE["acc"], "q": LIVE["q"], "pos": LIVE["pos"],
@@ -299,7 +205,7 @@ td.pos{color:var(--b);font-weight:700}td.neg{color:var(--a);font-weight:700}
 </style>
 <div class=wrap>
 <h1>Strategy research</h1>
-<div class=sub>Live data from MT4. Backtests use one year of 15-minute history downloaded by the server.</div>
+<div class=sub>Live data from MT4. Backtests run automatically on the data the server holds.</div>
 <div class=bar><div id=br></div><span class=pill id=st>Waiting for data</span></div>
 <div id=nt></div>
 <div class=strip id=ac></div>
@@ -307,7 +213,7 @@ td.pos{color:var(--b);font-weight:700}td.neg{color:var(--a);font-weight:700}
 <h2>Live prices</h2><p class=cap id=mk></p>
 <div class=tb><table id=t4></table></div>
 <h2>How the markets move together</h2>
-<p class=cap>Hourly moves over the last year. Blue: move together. Amber: move opposite. Take Buy and Sell trades from different groups, not from a pair that moves opposite.</p>
+<p class=cap>Hourly moves. Blue: move together. Amber: move opposite. Take Buy and Sell trades from different groups, not from a pair that moves opposite.</p>
 <div class=tb><table id=t5></table></div>
 <div style="margin-top:22px"></div><div class=strip id=sp></div>
 <h2>Strategies across all pairs</h2>
@@ -342,7 +248,7 @@ function live(l){const a=l.acc;
   q+='<tr><td>'+s+'<td>'+(o?badge('Open','g'):badge('Closed','a')+'<small>last tick '+(x.age!=null&&x.age<99999?ago(x.age)+' ago':'unknown')+'</small>')+'<td'+m+'>'+x.bid+'<td'+m+'>'+x.ask+'<td'+m+'>'+(o?Math.round((x.ask-x.bid)*Math.pow(10,dec)):'-')+'</tr>'}
  $('t4').innerHTML=q}
 function corr(c){
- if(!c||!c.names.length){$('t5').innerHTML='<tr><td>Calculated after the history download finishes</tr>';return}
+ if(!c||!c.names.length){$('t5').innerHTML='<tr><td>Calculated when the backtest starts</tr>';return}
  let h='<tr><th><th>'+c.names.join('<th>')+'</tr>';
  c.names.forEach((n,i)=>{h+='<tr><td>'+n+c.m[i].map((v,j)=>'<td class="'+(i==j?'m':v>=.5?'pos':v<=-.5?'neg':'')+'">'+(i==j?'-':v.toFixed(2))).join('')+'</tr>'});
  $('t5').innerHTML=h}
@@ -358,18 +264,14 @@ function summary(R){const m={};
  return Object.keys(m).map(k=>{const a=m[k];a.k=k;a.pf=a.gl?a.gw/a.gl:null;a.ipf=a.igl?a.igw/a.igl:null;return a}).sort((x,y)=>(y.pf||0)-(x.pf||0))}
 async function load(){
  let d;try{d=await (await fetch('/state')).json()}catch(e){$('br').innerHTML='<span class="dot warn"></span>Server is waking up, please wait up to a minute...';return}
- const R=d.results,f=d.fetch;bridge(d.bridge);live(d.live);corr(d.corr);
- $('st').textContent=f.status=='running'?'Downloading: '+f.now+' · '+f.step+(f.step=='downloading'?' '+f.pct+'%':'')+' ('+f.done+' of '+f.total+' pairs)':d.status=='running'?'Running backtest...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
+ const R=d.results;bridge(d.bridge);live(d.live);corr(d.corr);
+ $('st').textContent=d.status=='running'?'Running backtest...':d.status=='error'?'Error: '+d.error:R.length?'Results ready':'Waiting for data';
  const T=R.reduce((s,r)=>s+(r.oos.n||0),0),P=R.filter(r=>r.ok).length;
  let fr='',to='',days=0;
  if(R.length){fr=R.map(r=>r.from).sort()[0];to=R.map(r=>r.to).sort().pop();days=Math.round((new Date(to)-new Date(fr))/864e5)}
  const pairs=new Set(R.map(r=>r.sym)).size;
- $('sp').innerHTML='<div><b>'+pairs+'</b><span>pairs tested</span></div><div><b>'+days+' days</b><span>'+(fr?fr+' to '+to:'no data yet')+'</span></div><div><b>'+T+'</b><span>trades on unseen data</span></div><div><b>'+P+' of '+R.length+'</b><span>pair and strategy tests passed</span></div>';
- let nt='';
- if(f.status=='running')nt+='<div class=note><b>Download progress</b><br>Days with data: '+f.ok+' · empty days: '+f.empty+' · failed days: '+f.fail+(f.err?'<br>Last problem: '+f.err:'')+'</div>';
- if(f.failed&&f.failed.length)nt+='<div class=note><b>Could not download:</b><br>'+f.failed.join('<br>')+'</div>';
- if(R.length&&days<180)nt+='<div class=note>Only '+days+' days of data. Treat these results as early signs, not proof.</div>';
- $('nt').innerHTML=nt;
+ $('sp').innerHTML='<div><b>'+pairs+'</b><span>pairs tested</span></div><div><b>'+days+' days</b><span>'+(fr?fr+' to '+to:'no data yet')+(d.src?' · '+d.src:'')+'</span></div><div><b>'+T+'</b><span>trades on unseen data</span></div><div><b>'+P+' of '+R.length+'</b><span>pair and strategy tests passed</span></div>';
+ $('nt').innerHTML=R.length&&days<180?'<div class=note>Only '+days+' days of data ('+d.src+'). Treat these results as early signs, not proof. Upload one year of history to test properly.</div>':'';
  let h='<tr><th>Strategy<th>Pairs<th>Trades<th>Win rate<th>PF<th>Earlier PF<th>Net R<th>Verdict</tr>';
  for(const a of summary(R)){
   const v=a.n<100?['Too few trades','a']:(a.pf>1.1&&a.ipf>1)?['Candidate','g']:['No edge','r'];
