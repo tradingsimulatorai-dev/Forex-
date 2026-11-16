@@ -1,130 +1,250 @@
-import glob, os
+"""OHLC backtester for the Strategy Lab Flask app.
+
+CSV files must contain: time, open, high, low, close.
+The app expects run_all() to return results with sym, strat, from, to,
+is, oos and ok fields.
+"""
+import glob
+import os
+
 import numpy as np
 import pandas as pd
 
 
-def ema(s, n):
-    return s.ewm(span=n, adjust=False).mean()
+REQUIRED_COLUMNS = {"time", "open", "high", "low", "close"}
+STRATEGIES = ("EMA Trend", "EMA Crossover", "RSI Reversal")
 
 
-def prep(df):
-    c, h, l = df.close, df.high, df.low
-    pc = c.shift()
-    tr = pd.concat([h - l, (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
-    w = lambda s: s.ewm(alpha=1 / 14, adjust=False).mean()
-    df["atr"] = w(tr)
-    up, dn = h.diff(), -l.diff()
-    pdm = pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index)
-    mdm = pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=df.index)
-    pdi, mdi = 100 * w(pdm) / df.atr, 100 * w(mdm) / df.atr
-    df["adx"] = w(100 * (pdi - mdi).abs() / (pdi + mdi))
-    d = c.diff()
-    df["rsi"] = 100 - 100 / (1 + w(d.clip(lower=0)) / w(-d.clip(upper=0)))
-    df["e20"], df["e50"], df["e200"] = ema(c, 20), ema(c, 50), ema(c, 200)
-    m = ema(c, 12) - ema(c, 26)
-    df["mh"] = m - ema(m, 9)
-    ma, sd = c.rolling(20).mean(), c.rolling(20).std()
-    df["bu"], df["bl"] = ma + 2 * sd, ma - 2 * sd
-    df["hh"], df["ll"] = h.rolling(20).max().shift(), l.rolling(20).min().shift()
-    df["atr50"] = df.atr.rolling(50).mean()
+def load_csv(path):
+    try:
+        df = pd.read_csv(path)
+
+        if not REQUIRED_COLUMNS.issubset(df.columns):
+            return None
+
+        df = df.copy()
+        df["time"] = pd.to_datetime(
+            df["time"].astype(str).str.replace(".", "-", regex=False),
+            errors="coerce",
+            utc=True,
+        )
+
+        for column in ("open", "high", "low", "close"):
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+
+        df = df.dropna(
+            subset=["time", "open", "high", "low", "close"]
+        )
+        df = df[df["high"] >= df["low"]]
+        df = df[df["close"] > 0]
+        df = df.drop_duplicates("time")
+        df = df.sort_values("time").reset_index(drop=True)
+
+        return df if len(df) >= 300 else None
+    except Exception:
+        return None
+
+
+def add_indicators(df):
+    df = df.copy()
+
+    previous_close = df["close"].shift(1)
+    true_range = pd.concat(
+        [
+            df["high"] - df["low"],
+            (df["high"] - previous_close).abs(),
+            (df["low"] - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    df["atr"] = true_range.ewm(
+        alpha=1 / 14,
+        adjust=False,
+        min_periods=14,
+    ).mean()
+
+    df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
+    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+    df["ema200"] = df["close"].ewm(span=200, adjust=False).mean()
+
+    change = df["close"].diff()
+    gains = change.clip(lower=0).ewm(
+        alpha=1 / 14,
+        adjust=False,
+        min_periods=14,
+    ).mean()
+    losses = (-change.clip(upper=0)).ewm(
+        alpha=1 / 14,
+        adjust=False,
+        min_periods=14,
+    ).mean()
+
+    relative_strength = gains / losses.replace(0, np.nan)
+    df["rsi"] = 100 - (100 / (1 + relative_strength))
+    df["rsi"] = df["rsi"].fillna(50)
+
     return df
 
 
-def strategies(df):
-    c = df.close
-    up, dn = df.e50 > df.e200, df.e50 < df.e200
-    S = {}
-    S["Trend Pullback"] = np.where(up & (df.adx > 20) & (df.rsi > 40) & (df.rsi.shift() <= 40), 1,
-                          np.where(dn & (df.adx > 20) & (df.rsi < 60) & (df.rsi.shift() >= 60), -1, 0))
-    L = (df.e20 > df.e50) & up & (df.mh > 0) & (df.adx > 25)
-    Sh = (df.e20 < df.e50) & dn & (df.mh < 0) & (df.adx > 25)
-    S["Trend Flow"] = np.where(L & ~L.shift(fill_value=False), 1,
-                      np.where(Sh & ~Sh.shift(fill_value=False), -1, 0))
-    ex = df.atr > 1.2 * df.atr50
-    S["Vol Breakout"] = np.where(ex & (c > df.hh) & up, 1, np.where(ex & (c < df.ll) & dn, -1, 0))
-    S["Range Sweep"] = np.where((df.low < df.bl) & (c > df.bl) & (df.rsi < 35), 1,
-                       np.where((df.high > df.bu) & (c < df.bu) & (df.rsi > 65), -1, 0))
-    return S
+def get_signal(row, previous_row, strategy):
+    """Return 1 for buy, -1 for sell, or 0 for no signal."""
+    if strategy == "EMA Trend":
+        if row.ema20 > row.ema50 and row.close > row.ema200:
+            return 1
+        if row.ema20 < row.ema50 and row.close < row.ema200:
+            return -1
+
+    elif strategy == "EMA Crossover":
+        if previous_row.ema20 <= previous_row.ema50:
+            if row.ema20 > row.ema50:
+                return 1
+        if previous_row.ema20 >= previous_row.ema50:
+            if row.ema20 < row.ema50:
+                return -1
+
+    elif strategy == "RSI Reversal":
+        if previous_row.rsi < 30 and row.rsi >= 30:
+            return 1
+        if previous_row.rsi > 70 and row.rsi <= 70:
+            return -1
+
+    return 0
 
 
-def spread_for(sym):
-    # assumed average spread in price units (edit to match your broker)
-    if "BTC" in sym:
-        return 25.0
-    if "XAU" in sym:
-        return 0.30
-    if "US500" in sym:
-        return 0.8
-    if "USOIL" in sym:
-        return 0.05
-    if "AUDNZD" in sym:
-        return 0.00025
-    if "JPY" in sym:
-        return 0.015
-    return 0.00012
+def simulate(df, strategy, sl_mult, tp_mult):
+    """Simulate trades; each outcome is measured in R multiples."""
+    outcomes = []
+    i = 201
 
+    while i < len(df) - 1:
+        row = df.iloc[i]
+        previous_row = df.iloc[i - 1]
+        direction = get_signal(row, previous_row, strategy)
 
-def sim(df, sig, spread, k=1.5, m=3.0, maxbars=96):
-    o, h, l, c, a = (df[x].values for x in ("open", "high", "low", "close", "atr"))
-    t = df.time.values
-    out, i, n = [], 210, len(df)
-    while i < n - 2:
-        d = sig[i]
-        if d == 0 or not a[i] > 0:
+        atr = float(row.atr) if pd.notna(row.atr) else 0.0
+        if direction == 0 or not np.isfinite(atr) or atr <= 0:
             i += 1
             continue
-        e, sl, tp = o[i + 1], k * a[i], m * a[i]
-        R, j, end = None, i + 1, min(i + 1 + maxbars, n)
-        while j < end:
-            hit_sl = l[j] <= e - sl if d == 1 else h[j] >= e + sl
-            hit_tp = h[j] >= e + tp if d == 1 else l[j] <= e - tp
-            if hit_sl:  # SL first when both hit in one candle (conservative)
-                R = -1.0
-                break
-            if hit_tp:
-                R = m / k
-                break
-            j += 1
-        if R is None:
-            j = end - 1
-            R = d * (c[j] - e) / sl
-        R -= spread / sl
-        out.append((t[i + 1], R))
-        i = j + 1
-    return out
 
+        entry_index = i + 1
+        entry_price = float(df.iloc[entry_index].open)
+        risk = atr * float(sl_mult)
 
-def stats(R):
-    R = np.array(R, dtype=float)
-    if len(R) == 0:
-        return {"n": 0}
-    w, ls = R[R > 0].sum(), -R[R <= 0].sum()
-    eq = np.cumsum(R)
-    dd = (np.maximum.accumulate(eq) - eq).max()
-    return {"n": int(len(R)), "wr": round(float(100 * (R > 0).mean()), 1),
-            "pf": round(float(w / ls), 2) if ls > 0 else 99.0,
-            "exp": round(float(R.mean()), 3), "tot": round(float(R.sum()), 1),
-            "dd": round(float(dd), 1), "gw": round(float(w), 2), "gl": round(float(ls), 2)}
-
-
-def run_all(folder, k=1.5, m=3.0):
-    res = []
-    for f in sorted(glob.glob(folder + "/*.csv")):
-        sym = os.path.basename(f).split("_")[0]
-        df = pd.read_csv(f)
-        df["time"] = pd.to_datetime(df.time.astype(str).str.replace(".", "-", regex=False))
-        df = df.drop_duplicates("time").sort_values("time").reset_index(drop=True)
-        if len(df) < 1500:
+        if risk <= 0:
+            i += 1
             continue
-        df = prep(df)
-        cut = df.time.iloc[int(len(df) * 2 / 3)]
-        for name, sig in strategies(df).items():
-            tr = sim(df, sig, spread_for(sym), k, m)
-            ins = [r for t, r in tr if t < np.datetime64(cut)]
-            oos = [r for t, r in tr if t >= np.datetime64(cut)]
-            so, si = stats(oos), stats(ins)
-            ok = bool(so["n"] >= 30 and so.get("pf", 0) > 1.1 and si.get("pf", 0) > 1.0)
-            res.append({"sym": sym, "strat": name, "is": si, "oos": so, "ok": ok,
-                        "bars": len(df), "from": str(df.time.iloc[0])[:10], "to": str(df.time.iloc[-1])[:10]})
-    res.sort(key=lambda r: r["oos"].get("pf", 0), reverse=True)
-    return res
+
+        stop_price = entry_price - direction * risk
+        target_price = entry_price + direction * atr * float(tp_mult)
+        outcome = None
+        exit_index = entry_index
+
+        for j in range(entry_index, len(df)):
+            candle = df.iloc[j]
+
+            if direction == 1:
+                stop_hit = float(candle.low) <= stop_price
+                target_hit = float(candle.high) >= target_price
+            else:
+                stop_hit = float(candle.high) >= stop_price
+                target_hit = float(candle.low) <= target_price
+
+            # If both levels are hit in one candle, assume stop-loss first.
+            if stop_hit:
+                outcome = -1.0
+                exit_index = j
+                break
+
+            if target_hit:
+                outcome = float(tp_mult) / float(sl_mult)
+                exit_index = j
+                break
+
+        if outcome is None:
+            final_price = float(df.iloc[-1].close)
+            outcome = direction * (final_price - entry_price) / risk
+            exit_index = len(df) - 1
+
+        outcomes.append(float(outcome))
+        i = exit_index + 1
+
+    return outcomes
+
+
+def calculate_stats(outcomes):
+    count = len(outcomes)
+    wins = sum(value > 0 for value in outcomes)
+    gross_wins = sum(value for value in outcomes if value > 0)
+    gross_losses = abs(sum(value for value in outcomes if value < 0))
+    total = sum(outcomes)
+
+    if gross_losses:
+        profit_factor = gross_wins / gross_losses
+    elif gross_wins:
+        profit_factor = 99.0
+    else:
+        profit_factor = None
+
+    return {
+        "n": count,
+        "w": wins,
+        "wr": (wins / count * 100) if count else 0.0,
+        "gw": gross_wins,
+        "gl": gross_losses,
+        "tot": total,
+        "pf": profit_factor,
+    }
+
+
+def run_all(folder, sl_mult=1.5, tp_mult=3.0):
+    """Run all example strategies against CSV files in the history folder."""
+    results = []
+
+    for path in sorted(glob.glob(os.path.join(folder, "*.csv"))):
+        raw_data = load_csv(path)
+        if raw_data is None:
+            continue
+
+        df = add_indicators(raw_data)
+        split_index = int(len(df) * 2 / 3)
+
+        for strategy in STRATEGIES:
+            in_sample = df.iloc[:split_index].reset_index(drop=True)
+
+            # Keep 201 earlier rows for indicator warmup; trades begin
+            # within the out-of-sample period.
+            out_of_sample = df.iloc[
+                max(0, split_index - 201):
+            ].reset_index(drop=True)
+
+            is_stats = calculate_stats(
+                simulate(in_sample, strategy, sl_mult, tp_mult)
+            )
+            oos_stats = calculate_stats(
+                simulate(out_of_sample, strategy, sl_mult, tp_mult)
+            )
+
+            oos_pf = oos_stats["pf"]
+            is_pf = is_stats["pf"]
+
+            passed = (
+                oos_stats["n"] >= 30
+                and oos_pf is not None
+                and is_pf is not None
+                and oos_pf > 1.1
+                and is_pf > 1.0
+            )
+
+            results.append({
+                "sym": os.path.basename(path).split("_")[0],
+                "strat": strategy,
+                "from": df["time"].iloc[0].strftime("%Y-%m-%d"),
+                "to": df["time"].iloc[-1].strftime("%Y-%m-%d"),
+                "is": is_stats,
+                "oos": oos_stats,
+                "ok": bool(passed),
+            })
+
+    return results
+    
